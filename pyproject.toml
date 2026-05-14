@@ -1,0 +1,99 @@
+[project]
+name = "lax"
+version = "0.1.0"
+description = "JAX-compiled Lagrange-mesh solvers for quantum scattering and bound-state problems"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+
+# ── Runtime dependencies ────────────────────────────────────────────────────
+# jax (pure Python) is required; jaxlib (compiled XLA backend) is installed
+# separately via one of the backend extras below. This lets downstream users
+# choose their hardware without a conflict.
+dependencies = [
+    "jax>=0.4.36",
+    "scipy>=1.13",
+    "mpmath>=1.3",
+]
+
+# ── Backend extras ──────────────────────────────────────────────────────────
+# Install exactly one. All of these pull from PyPI; no extra index needed.
+#
+#   CPU (any platform):
+#       uv sync --extra cpu --group dev
+#
+#   NVIDIA, CUDA 13 — recommended for new setups (SM 7.5+, driver >= 580):
+#       uv sync --extra cuda13 --group dev
+#
+#   NVIDIA, CUDA 12 — for older drivers (SM 5.2+, driver >= 525):
+#       uv sync --extra cuda12 --group dev
+#
+#   NVIDIA, CUDA 13, local toolkit — if CUDA is already installed on the host:
+#       uv sync --extra cuda13-local --group dev
+#
+#   NVIDIA, CUDA 12, local toolkit:
+#       uv sync --extra cuda12-local --group dev
+#
+#   AMD GPU, ROCm 7 — requires ROCm installed locally (Linux only):
+#       uv sync --extra rocm --group dev
+#       (see https://github.com/jax-ml/jax/blob/main/build/rocm/README.md)
+#
+#   Google Cloud TPU:
+#       uv sync --extra tpu --group dev
+
+[project.optional-dependencies]
+cpu         = ["jax[cpu]>=0.4.36"]
+cuda13      = ["jax[cuda13]>=0.4.36"]
+cuda12      = ["jax[cuda12]>=0.4.36"]
+cuda13-local = ["jax[cuda13-local]>=0.4.36"]
+cuda12-local = ["jax[cuda12-local]>=0.4.36"]
+rocm        = ["jax[rocm7-local]>=0.4.36"]
+tpu         = ["jax[tpu]>=0.4.36"]
+
+dev = [
+    "pytest>=8.2",
+    "pytest-xdist>=3.5",
+    "hypothesis>=6.100",
+    "chex>=0.1.87",
+    "pyright>=1.1.390",
+]
+
+# ── Dependency groups ────────────────────────────────────────────────────────
+# The dev group defaults to the CPU backend so `uv sync --group dev` works
+# everywhere. GPU/TPU/ROCm developers add their backend extra on top.
+[dependency-groups]
+dev = [
+    "lax[cpu,dev]",
+    "ruff>=0.15.12",
+]
+
+# ── Build ────────────────────────────────────────────────────────────────────
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+# ── Tool config ───────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"
+markers = [
+    "benchmark: known-analytic comparison tests (slower)",
+    "property:  hypothesis-based property tests",
+    "unit:      fast unit tests (mesh construction, operators)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501", "E741"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+include = ["src"]
+typeCheckingMode = "strict"

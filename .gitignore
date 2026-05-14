@@ -1,0 +1,34 @@
+./DESIGN.md
+./theory/*
+./prototype/*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+
+# uv / venv
+.venv/
+uv.lock
+
+# JAX / XLA compilation cache
+/jax_cache/
+/tmp/
+
+# Test artefacts
+.pytest_cache/
+.hypothesis/
+htmlcov/
+.coverage
+coverage.xml
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
