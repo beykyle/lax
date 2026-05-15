@@ -13,9 +13,14 @@ from lax.boundary._types import (
     Mesh,
     RMatrixObservable,
     SpectrumObservable,
+    WavefunctionObservable,
 )
 from lax.spectral.matching import phases_from_S, smatrix_from_R
-from lax.spectral.observables import greens_from_spectrum, rmatrix_from_spectrum
+from lax.spectral.observables import (
+    greens_from_spectrum,
+    rmatrix_from_spectrum,
+    wavefunction_internal_from_spectrum,
+)
 from lax.spectral.types import Spectrum
 from lax.types import ChannelSpec
 
@@ -30,6 +35,7 @@ def bind_observables(
     SpectrumObservable | None,
     SpectrumObservable | None,
     GreenFunctionObservable,
+    WavefunctionObservable,
     EigenpairAccessor,
 ]:
     """Bind solver observables to cached mesh and boundary data. [DESIGN.md §11.2]"""
@@ -55,6 +61,14 @@ def bind_observables(
     def greens(spectrum: Spectrum, energy: float | jax.Array) -> jax.Array:
         return greens_from_spectrum(spectrum, energy=energy, mass_factor=mass_factor)
 
+    def wavefunction(spectrum: Spectrum, energy: float | jax.Array, source: jax.Array) -> jax.Array:
+        return wavefunction_internal_from_spectrum(
+            spectrum,
+            energy=energy,
+            source=source,
+            mass_factor=mass_factor,
+        )
+
     def eigh(spectrum: Spectrum) -> tuple[jax.Array, jax.Array | None]:
         return spectrum.eigenvalues, spectrum.eigenvectors
 
@@ -62,12 +76,16 @@ def bind_observables(
         GreenFunctionObservable,
         jax.jit(greens),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
     )
+    wavefunction_bound = cast(
+        WavefunctionObservable,
+        jax.jit(wavefunction),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
+    )
     eigh_bound = cast(
         EigenpairAccessor,
         jax.jit(eigh),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
     )
 
-    return rmatrix_bound, smatrix, phases, greens_bound, eigh_bound
+    return rmatrix_bound, smatrix, phases, greens_bound, wavefunction_bound, eigh_bound
 
 
 def _bind_smatrix(

@@ -99,6 +99,13 @@ uv run pytest tests/ -n auto
 uv run pytest tests/benchmarks/test_yamaguchi.py -v
 ```
 
+## Examples and notebooks
+
+```bash
+uv sync --group dev --group jupyter
+uv run jupyter lab
+```
+
 ## Development
 
 See `DESIGN.md` for the full architecture documentation and

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
@@ -71,19 +72,38 @@ class DirectRMatrixKernel(Protocol):
         ...
 
 
-class GridTransform(Protocol):
-    """Callable interface for mesh-to-grid transforms."""
+class GridVectorTransform(Protocol):
+    """Callable interface for mesh-vector to radial-grid transforms."""
 
     def __call__(self, values: jax.Array) -> jax.Array:
         """Project mesh coefficients onto a radial grid."""
         ...
 
 
+class FromGridVectorTransform(Protocol):
+    """Callable interface for radial-grid to mesh-vector transforms."""
+
+    def __call__(
+        self,
+        values: jax.Array | Callable[[jax.Array], jax.Array],
+    ) -> jax.Array:
+        """Project sampled radial-grid values or a callable profile onto the mesh basis."""
+        ...
+
+
+class GridMatrixTransform(Protocol):
+    """Callable interface for mesh-matrix to radial-grid transforms."""
+
+    def __call__(self, values: jax.Array) -> jax.Array:
+        """Project a mesh-space kernel onto a radial grid."""
+        ...
+
+
 class FourierTransform(Protocol):
     """Callable interface for mesh-to-momentum transforms."""
 
-    def __call__(self, values: jax.Array) -> jax.Array:
-        """Project mesh coefficients onto a momentum grid."""
+    def __call__(self, values: jax.Array, channel_index: int = 0) -> jax.Array:
+        """Project mesh coefficients or kernels onto a momentum grid."""
         ...
 
 
@@ -165,7 +185,9 @@ class Solver:
     wavefunction: WavefunctionObservable | None = None
     eigh: EigenpairAccessor | None = None
     rmatrix_direct: DirectRMatrixKernel | None = None
-    to_grid: GridTransform | None = None
+    to_grid_vector: GridVectorTransform | None = None
+    from_grid_vector: FromGridVectorTransform | None = None
+    to_grid_matrix: GridMatrixTransform | None = None
     fourier: FourierTransform | None = None
     integrate: Integrator | None = None
 
@@ -176,8 +198,10 @@ __all__ = [
     "EigenpairAccessor",
     "EnergyLike",
     "FourierTransform",
+    "FromGridVectorTransform",
     "GreenFunctionObservable",
-    "GridTransform",
+    "GridMatrixTransform",
+    "GridVectorTransform",
     "Integrator",
     "Mesh",
     "OperatorMatrices",

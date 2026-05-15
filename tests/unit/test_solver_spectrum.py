@@ -4,11 +4,18 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import lax as lm
 from lax.boundary import BoundaryValues
 from lax.boundary._types import OperatorMatrices
 from lax.meshes.legendre import build_legendre_x
-from lax.solvers import assemble_block_hamiltonian, bind_observables, build_Q, make_spectrum_kernel
-from lax.types import ChannelSpec
+from lax.solvers import (
+    assemble_block_hamiltonian,
+    bind_observables,
+    build_Q,
+    make_rmatrix_direct_kernel,
+    make_spectrum_kernel,
+)
+from lax.types import ChannelSpec, MeshSpec
 
 pytest.importorskip("jax")
 
@@ -83,7 +90,7 @@ def test_bind_observables_matches_direct_spectral_helpers() -> None:
     )
     spectrum = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)(potential)
 
-    rmatrix, smatrix, phases, greens, eigh = bind_observables(
+    rmatrix, smatrix, phases, greens, wavefunction, eigh = bind_observables(
         mesh,
         channels,
         energies=jnp.asarray([0.5]),
@@ -97,14 +104,78 @@ def test_bind_observables_matches_direct_spectral_helpers() -> None:
     s_value = np.asarray(smatrix(spectrum))
     phase_value = np.asarray(phases(spectrum))
     green_value = np.asarray(greens(spectrum, 0.5))
+    wavefunction_value = np.asarray(wavefunction(spectrum, 0.5, jnp.asarray([1.0, 0.0, 0.0, 0.0])))
     eigenvalues, eigenvectors = eigh(spectrum)
 
     assert r_value.shape == (1, 1)
     assert s_value.shape == (1, 1, 1)
     assert phase_value.shape == (1, 1)
     assert green_value.shape == (4, 4)
+    assert wavefunction_value.shape == (4,)
     assert eigenvectors is not None
     assert np.allclose(np.asarray(eigenvalues), np.asarray(spectrum.eigenvalues))
+
+
+def test_compile_binds_wavefunction_observable() -> None:
+    """`compile()` exposes the wavefunction observable when requested."""
+
+    solver = lm.compile(
+        mesh=MeshSpec("legendre", "x", n=4, scale=7.0),
+        channels=(ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+        solvers=("spectrum", "wavefunction"),
+    )
+    potential = jnp.asarray([[[0.2, 0.1, 0.0, -0.1]]])
+
+    assert solver.spectrum is not None
+    assert solver.wavefunction is not None
+
+    spectrum = solver.spectrum(potential)
+    values = np.asarray(solver.wavefunction(spectrum, 0.5, jnp.asarray([1.0, 0.0, 0.0, 0.0])))
+
+    assert values.shape == (4,)
+
+
+def test_coupled_channel_rmatrix_matches_direct_solver() -> None:
+    """The spectral and direct R-matrix solvers agree for coupled channels."""
+
+    mesh, operators = build_legendre_x(n=4, scale=8.0, operators={"T+L", "1/r^2"})
+    channels = (
+        ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),
+        ChannelSpec(l=1, threshold=0.5, mass_factor=2.0),
+    )
+    potential = jnp.asarray(
+        [
+            [
+                [0.4, 0.3, 0.2, 0.1],
+                [0.05, 0.04, 0.03, 0.02],
+            ],
+            [
+                [0.05, 0.04, 0.03, 0.02],
+                [0.2, 0.1, 0.0, -0.1],
+            ],
+        ]
+    )
+    spectrum_kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
+    spectrum = spectrum_kernel(potential)
+    rmatrix, smatrix, phases, _, _, _ = bind_observables(
+        mesh,
+        channels,
+        energies=jnp.asarray([0.25]),
+        boundary=BoundaryValues(
+            H_plus=jnp.asarray([[1.0 + 1.0j, 1.1 + 0.9j]]),
+            H_minus=jnp.asarray([[1.0 - 1.0j, 1.1 - 0.9j]]),
+            H_plus_p=jnp.asarray([[0.2 + 0.1j, 0.3 + 0.15j]]),
+            H_minus_p=jnp.asarray([[0.2 - 0.1j, 0.3 - 0.15j]]),
+            is_open=jnp.asarray([[True, True]]),
+        ),
+    )
+    direct = make_rmatrix_direct_kernel(mesh, operators, channels, jnp.asarray([0.25]))(potential)
+
+    assert smatrix is not None
+    assert phases is not None
+    assert np.allclose(np.asarray(rmatrix(spectrum, 0.25)), np.asarray(direct[0]), atol=1.0e-10)
+    assert np.asarray(smatrix(spectrum)).shape == (1, 2, 2)
+    assert np.asarray(phases(spectrum)).shape == (1, 2)
 
 
 def test_make_spectrum_kernel_requires_supported_method() -> None:

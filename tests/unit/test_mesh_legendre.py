@@ -58,4 +58,4 @@ def test_build_mesh_rejects_unknown_builder() -> None:
     """Registry rejects unsupported mesh families."""
 
     with pytest.raises(ValueError, match="No builder"):
-        build_mesh("laguerre", "x", n=4, scale=1.0, operators=set())
+        build_mesh("laguerre", "x^3/2", n=4, scale=1.0, operators=set())

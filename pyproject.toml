@@ -67,6 +67,14 @@ dev = [
     "ruff>=0.15.12",
 ]
 
+jupyter = [
+    "jupyterlab>=4.3",
+    "ipykernel>=6.29",
+    "matplotlib>=3.9",
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+]
+
 # ── Build ────────────────────────────────────────────────────────────────────
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]
