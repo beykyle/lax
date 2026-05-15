@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.special as sc  # pyright: ignore[reportMissingTypeStubs] -- SciPy does not currently ship complete type stubs for special.
 
-from lax.boundary._types import FourierTransform, Mesh, TransformMatrices
+from lax.boundary._types import DoubleFourierTransform, FourierTransform, Mesh, TransformMatrices
 from lax.meshes._basis_eval import basis_at
 
 
@@ -96,4 +96,41 @@ def make_fourier(transform_matrices: TransformMatrices) -> FourierTransform:
     )
 
 
-__all__ = ["compute_F_momentum", "make_fourier"]
+def make_double_fourier(transform_matrices: TransformMatrices) -> DoubleFourierTransform:
+    """Return a JIT-compiled double Fourier-Bessel transform for mesh kernels."""
+
+    if transform_matrices.F_momentum is None:
+        msg = (
+            "TransformMatrices.F_momentum is required to build the double Fourier transform."
+        )
+        raise ValueError(msg)
+
+    fourier_matrices = transform_matrices.F_momentum
+
+    def double_fourier_transform(
+        values: jax.Array,
+        left_channel_index: int = 0,
+        right_channel_index: int | None = None,
+    ) -> jax.Array:
+        if values.ndim != 2:
+            msg = "double_fourier_transform expects a rank-2 mesh-space kernel."
+            raise ValueError(msg)
+
+        resolved_right_channel_index = (
+            left_channel_index if right_channel_index is None else right_channel_index
+        )
+        left_matrix = fourier_matrices[left_channel_index]
+        right_matrix = fourier_matrices[resolved_right_channel_index]
+        result: jax.Array = left_matrix @ values @ right_matrix.T
+        return result
+
+    return cast(
+        DoubleFourierTransform,
+        jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
+            double_fourier_transform,
+            static_argnames=("left_channel_index", "right_channel_index"),
+        ),
+    )
+
+
+__all__ = ["compute_F_momentum", "make_double_fourier", "make_fourier"]

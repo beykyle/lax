@@ -49,8 +49,10 @@ def _hydrogen_radial_wavefunction(n: int, angular_momentum: int, radii: np.ndarr
     """Return the normalized internal hydrogen radial wavefunction `u_{nl}(r)`."""
 
     rho = 2.0 * radii / float(n)
-    prefactor = 2.0 / (n**2) * math.sqrt(
-        math.factorial(n - angular_momentum - 1) / math.factorial(n + angular_momentum)
+    prefactor = (
+        2.0
+        / (n**2)
+        * math.sqrt(math.factorial(n - angular_momentum - 1) / math.factorial(n + angular_momentum))
     )
     radial = (
         prefactor
@@ -240,3 +242,34 @@ def test_hydrogen_wavefunctions_match_analytic_momentum_forms(
     )
 
     assert relative_l2_error < 5.0e-2
+
+
+@pytest.mark.benchmark
+def test_hydrogen_momentum_norm_matches_current_fourier_convention() -> None:
+    """Hydrogen 1s raw Fourier norm matches the current partial-wave convention."""
+
+    momenta = jnp.linspace(0.0, 6.0, 600)
+    solver = _hydrogen_solver(0, with_grid=True, momenta=momenta)
+
+    assert solver.spectrum is not None
+    assert solver.to_grid_vector is not None
+    assert solver.fourier is not None
+    assert solver.transforms.grid_r is not None
+    assert solver.transforms.momenta is not None
+
+    spectrum = solver.spectrum(_hydrogen_potential(solver))
+    assert spectrum.eigenvectors is not None
+
+    eigenvector = jnp.asarray(np.asarray(spectrum.eigenvectors)[:, 0])
+    numerical_r = np.asarray(solver.to_grid_vector(eigenvector))
+    numerical_k = np.asarray(solver.fourier(eigenvector))
+    radii = np.asarray(solver.transforms.grid_r)
+    momenta_np = np.asarray(solver.transforms.momenta)
+    analytic_k = _hydrogen_momentum_wavefunction(1, 0, momenta_np)
+
+    r_norm = float(np.trapezoid(np.abs(numerical_r) ** 2, radii))
+    numerical_k_norm = float(np.trapezoid(np.abs(numerical_k) ** 2, momenta_np))
+    analytic_k_norm = float(np.trapezoid(np.abs(analytic_k) ** 2, momenta_np))
+
+    assert abs(r_norm - 1.0) < 1.0e-6
+    assert abs(numerical_k_norm - analytic_k_norm) < 2.0e-6

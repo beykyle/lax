@@ -89,7 +89,9 @@ def _compute_from_grid_projection(mesh: Mesh, basis_grid: jax.Array, radii: jax.
         diagonal = np.diag(basis_grid_np)
         projection = np.diag(1.0 / diagonal)
     elif basis_grid_np.shape[0] == basis_grid_np.shape[1]:
-        projection = np.linalg.solve(basis_grid_np, np.eye(basis_grid_np.shape[0], dtype=np.float64))
+        projection = np.linalg.solve(
+            basis_grid_np, np.eye(basis_grid_np.shape[0], dtype=np.float64)
+        )
     else:
         projection = np.linalg.pinv(basis_grid_np)
 

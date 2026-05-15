@@ -15,6 +15,7 @@ from lax.solvers import bind_observables, make_rmatrix_direct_kernel, make_spect
 from lax.transforms import (
     compute_B_grid,
     compute_F_momentum,
+    make_double_fourier,
     make_fourier,
     make_integration,
     make_to_grid,
@@ -54,11 +55,11 @@ def compile(
     if needs_spectrum or "rmatrix_direct" in solvers_set:
         operators_set.add("T+L")
 
-    selected_method = method or ("linear_solve" if V_is_complex else "eigh")
-    if selected_method not in {"eigh", "linear_solve"}:
+    selected_method = method or _default_method(V_is_complex)
+    if selected_method not in {"eigh", "eig", "linear_solve"}:
         msg = f"Method {selected_method!r} is not implemented in the MVP compile() path."
         raise ValueError(msg)
-    if needs_spectrum and selected_method != "eigh":
+    if needs_spectrum and selected_method not in {"eigh", "eig"}:
         msg = f"Method {selected_method!r} is not implemented in the MVP spectrum path."
         raise ValueError(msg)
 
@@ -90,6 +91,7 @@ def compile(
     from_grid_vector_fn = None
     to_grid_matrix_fn = None
     fourier_fn = None
+    double_fourier_transform_fn = None
     if grid is not None:
         grid_array = _to_jax_array(np.asarray(grid))
         basis_grid = compute_B_grid(mesh_data, grid_array)
@@ -119,6 +121,7 @@ def compile(
             momenta=momenta_array,
         )
         fourier_fn = make_fourier(transforms)
+        double_fourier_transform_fn = make_double_fourier(transforms)
     integrate_fn = make_integration(mesh_data)
 
     keep_eigenvectors = bool(solvers_set & {"greens", "wavefunction"})
@@ -190,6 +193,7 @@ def compile(
         from_grid_vector=from_grid_vector_fn,
         to_grid_matrix=to_grid_matrix_fn,
         fourier=fourier_fn,
+        double_fourier_transform=double_fourier_transform_fn,
         integrate=integrate_fn,
     )
 
@@ -202,3 +206,11 @@ def _to_jax_array(values: np.ndarray) -> jax.Array:
 
     array: jax.Array = jnp.asarray(values)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
     return array
+
+
+def _default_method(V_is_complex: bool) -> Method:
+    """Choose the default continuum method from the backend and potential type."""
+
+    if not V_is_complex:
+        return "eigh"
+    return "eig" if jax.default_backend() == "cpu" else "linear_solve"

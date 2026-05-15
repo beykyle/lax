@@ -31,7 +31,9 @@ def _coefficients_for_profile(solver: Solver, profile: RadialProfile) -> jax.Arr
     )
 
 
-def _analytic_fourier_cases() -> list[tuple[str, int, RadialProfile, MomentumProfile, float, float]]:
+def _analytic_fourier_cases() -> list[
+    tuple[str, int, RadialProfile, MomentumProfile, float, float]
+]:
     """Return analytic Legendre-x Fourier reference cases."""
 
     beta = 0.5
@@ -48,10 +50,10 @@ def _analytic_fourier_cases() -> list[tuple[str, int, RadialProfile, MomentumPro
         0,
         lambda radii: radii**2 * (3.0 / (2.0 * beta) - radii**2) * np.exp(-beta * radii**2),
         lambda momenta: (
-            (momenta**2) / (4.0 * beta**2)
-        )
-        * np.exp(-(momenta**2) / (4.0 * beta))
-        / (2.0 * beta) ** 1.5,
+            ((momenta**2) / (4.0 * beta**2))
+            * np.exp(-(momenta**2) / (4.0 * beta))
+            / (2.0 * beta) ** 1.5
+        ),
         5.0e-5,
         1.0e-4,
     )
@@ -97,8 +99,11 @@ def test_compute_f_momentum_matches_half_line_quadrature_for_laguerre() -> None:
     expected = np.zeros_like(result)
     for momentum_index, momentum in enumerate(np.asarray(momenta)):
         for basis_index in range(mesh.n):
+
             def integrand(radius: float) -> float:
-                basis_value = float(np.asarray(basis_at(mesh, jnp.asarray([radius])))[0, basis_index])
+                basis_value = float(
+                    np.asarray(basis_at(mesh, jnp.asarray([radius])))[0, basis_index]
+                )
                 bessel_value = float(sc.spherical_jn(0, momentum * radius))
                 return np.sqrt(2.0 / np.pi) * bessel_value * basis_value
 
@@ -150,7 +155,7 @@ def test_fourier_matches_analytic_profile(
 
 
 def test_compile_binds_fourier_and_integrate() -> None:
-    """`compile()` exposes Fourier and integration helpers when requested."""
+    """`compile()` exposes Fourier, double-Fourier, and integration helpers."""
 
     solver = lm.compile(
         mesh=lm.MeshSpec("legendre", "x", n=5, scale=6.0),
@@ -162,13 +167,87 @@ def test_compile_binds_fourier_and_integrate() -> None:
     assert solver.transforms.F_momentum is not None
     assert solver.transforms.momenta is not None
     assert solver.fourier is not None
+    assert solver.double_fourier_transform is not None
     assert solver.integrate is not None
 
     values = jnp.asarray([1.0, -0.5, 0.25, 0.0, 0.5])
+    kernel = jnp.diag(values)
     momentum_values = np.asarray(solver.fourier(values))
+    transformed_kernel = np.asarray(solver.double_fourier_transform(kernel))
     norm = float(np.asarray(solver.integrate(values)))
     local_expectation = float(np.asarray(solver.integrate(values, jnp.linspace(1.0, 2.0, 5))))
 
     assert momentum_values.shape == (3,)
+    assert transformed_kernel.shape == (3, 3)
     assert norm > 0.0
     assert local_expectation > 0.0
+
+
+def test_double_fourier_transform_matches_same_channel_matrix_product() -> None:
+    """`solver.double_fourier_transform` matches `F @ K @ F.T` for one channel."""
+
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=5, scale=6.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+        solvers=(),
+        momenta=jnp.asarray([0.2, 0.5, 1.0]),
+    )
+
+    assert solver.transforms.F_momentum is not None
+    assert solver.double_fourier_transform is not None
+
+    kernel = jnp.asarray(
+        [
+            [1.0, 0.2, -0.1, 0.0, 0.0],
+            [0.2, 0.8, 0.3, 0.1, 0.0],
+            [-0.1, 0.3, 0.6, -0.2, 0.1],
+            [0.0, 0.1, -0.2, 0.4, 0.2],
+            [0.0, 0.0, 0.1, 0.2, 0.5],
+        ]
+    )
+    F = np.asarray(solver.transforms.F_momentum[0])
+
+    result = np.asarray(solver.double_fourier_transform(kernel))
+    expected = F @ np.asarray(kernel) @ F.T
+
+    assert np.allclose(result, expected, atol=1.0e-10, rtol=1.0e-10)
+
+
+def test_double_fourier_transform_supports_mixed_channel_indices() -> None:
+    """`solver.double_fourier_transform` uses different left/right channel matrices."""
+
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=5, scale=6.0),
+        channels=(
+            lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),
+            lm.ChannelSpec(l=1, threshold=0.0, mass_factor=2.0),
+        ),
+        solvers=(),
+        momenta=jnp.asarray([0.2, 0.5, 1.0]),
+    )
+
+    assert solver.transforms.F_momentum is not None
+    assert solver.double_fourier_transform is not None
+
+    kernel = jnp.asarray(
+        [
+            [0.4, -0.1, 0.0, 0.2, 0.1],
+            [0.0, 0.3, 0.2, -0.2, 0.0],
+            [0.1, 0.0, 0.5, 0.1, -0.1],
+            [0.2, -0.2, 0.0, 0.6, 0.3],
+            [0.0, 0.1, -0.1, 0.3, 0.7],
+        ]
+    )
+    F_left = np.asarray(solver.transforms.F_momentum[0])
+    F_right = np.asarray(solver.transforms.F_momentum[1])
+
+    result = np.asarray(
+        solver.double_fourier_transform(
+            kernel,
+            left_channel_index=0,
+            right_channel_index=1,
+        )
+    )
+    expected = F_left @ np.asarray(kernel) @ F_right.T
+
+    assert np.allclose(result, expected, atol=1.0e-10, rtol=1.0e-10)

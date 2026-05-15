@@ -2,6 +2,9 @@
 ./theory/*
 ./prototype/*
 
+# .ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
 # Python
 __pycache__/
 *.py[cod]

@@ -108,9 +108,7 @@ def laguerre_x_basis_at(mesh: Mesh, radii: np.ndarray) -> np.ndarray:
         * laguerre_values[:, None]
         * np.exp(-0.5 * dimensionless_radii[:, None])
     )
-    denominator = np.sqrt(scale * nodes)[None, :] * (
-        dimensionless_radii[:, None] - nodes[None, :]
-    )
+    denominator = np.sqrt(scale * nodes)[None, :] * (dimensionless_radii[:, None] - nodes[None, :])
 
     close_mask = np.isclose(dimensionless_radii[:, None], nodes[None, :])
     values = np.empty_like(numerator)

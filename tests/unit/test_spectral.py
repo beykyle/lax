@@ -77,6 +77,35 @@ def test_greens_from_spectrum_matches_direct_inverse() -> None:
     assert np.allclose(result, expected)
 
 
+def test_greens_from_complex_symmetric_spectrum_uses_transpose_metric() -> None:
+    """Complex-symmetric spectra reconstruct the Green's function with `U diag U^T`."""
+
+    sine = 0.2j
+    cosine = np.sqrt(1.0 - sine**2)
+    eigenvectors = np.array(
+        [
+            [cosine, -sine],
+            [sine, cosine],
+        ],
+        dtype=np.complex128,
+    )
+    eigenvalues = np.array([0.8 + 0.05j, 1.7 + 0.1j], dtype=np.complex128)
+    hamiltonian = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+    spectrum = Spectrum(
+        eigenvalues=jnp.asarray(eigenvalues),
+        surface_amplitudes=jnp.asarray([[1.0 + 0.0j], [0.0 + 0.0j]]),
+        eigenvectors=jnp.asarray(eigenvectors),
+        is_hermitian=False,
+    )
+
+    energy = 0.2
+    mass_factor = 2.0
+    expected = np.linalg.inv(hamiltonian - (energy / mass_factor) * np.eye(2))
+    result = np.asarray(greens_from_spectrum(spectrum, energy=energy, mass_factor=mass_factor))
+
+    assert np.allclose(result, expected)
+
+
 def test_smatrix_from_R_is_unitary_for_real_r() -> None:
     """Real R with conjugate boundary data yields a unitary S-matrix."""
 

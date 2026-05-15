@@ -75,6 +75,45 @@ def test_make_spectrum_kernel_matches_direct_eigh() -> None:
     assert spectrum.eigenvectors is not None
 
 
+def test_make_spectrum_kernel_matches_complex_symmetric_eig() -> None:
+    """The compiled `eig` kernel reproduces a complex-symmetric eigensystem."""
+
+    mesh, operators = build_legendre_x(n=4, scale=8.0, operators={"T+L"})
+    channels = (ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),)
+    potential = jnp.asarray([[[0.5 + 0.1j, 1.0 + 0.2j, 1.5 + 0.3j, 2.0 + 0.4j]]])
+
+    spectrum = make_spectrum_kernel(
+        mesh,
+        operators,
+        channels,
+        method="eig",
+        keep_eigenvectors=True,
+    )(potential)
+    hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, potential))
+    expected_eigenvalues, expected_eigenvectors = np.linalg.eig(hamiltonian.astype(np.complex128))
+    order = np.argsort(expected_eigenvalues.real)
+    expected_eigenvalues = expected_eigenvalues[order]
+    expected_eigenvectors = expected_eigenvectors[:, order]
+    expected_norm = np.sqrt(np.diag(expected_eigenvectors.T @ expected_eigenvectors))
+    expected_eigenvectors = expected_eigenvectors / expected_norm[None, :]
+    result_eigenvalues = np.asarray(spectrum.eigenvalues)
+    result_vectors = np.asarray(spectrum.eigenvectors)
+    result_order = np.argsort(result_eigenvalues.real)
+    result_eigenvalues = result_eigenvalues[result_order]
+    result_vectors = result_vectors[:, result_order]
+
+    assert spectrum.eigenvectors is not None
+    assert spectrum.is_hermitian is False
+    assert np.allclose(result_eigenvalues.real, expected_eigenvalues.real)
+    assert np.allclose(result_eigenvalues.imag, expected_eigenvalues.imag)
+    assert np.allclose(result_vectors.T @ result_vectors, np.eye(4), atol=1.0e-10)
+    assert np.allclose(
+        np.abs(result_vectors),
+        np.abs(expected_eigenvectors),
+        atol=1.0e-10,
+    )
+
+
 def test_bind_observables_matches_direct_spectral_helpers() -> None:
     """Bound observables agree with the direct spectral helpers."""
 
@@ -178,14 +217,17 @@ def test_coupled_channel_rmatrix_matches_direct_solver() -> None:
     assert np.asarray(phases(spectrum)).shape == (1, 2)
 
 
-def test_make_spectrum_kernel_requires_supported_method() -> None:
-    """The MVP solver kernel supports only the `eigh` path."""
+def test_compile_defaults_to_eig_for_complex_cpu_problems() -> None:
+    """Complex potentials default to the spectral `eig` path on CPU."""
 
-    mesh, operators = build_legendre_x(n=3, scale=6.0, operators={"T+L"})
-    channels = (ChannelSpec(l=0, threshold=0.0, mass_factor=1.0),)
+    solver = lm.compile(
+        mesh=MeshSpec("legendre", "x", n=4, scale=8.0),
+        channels=(ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+        solvers=("spectrum",),
+        V_is_complex=True,
+    )
 
-    with pytest.raises(ValueError, match="not implemented"):
-        make_spectrum_kernel(mesh, operators, channels, method="eig")
+    assert solver.method == "eig"
 
 
 def test_assemble_block_hamiltonian_requires_t_plus_l() -> None:

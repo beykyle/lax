@@ -36,6 +36,7 @@ YAMAGUCHI_CASES = [
     (15.0, 20, 0.1, -15.078689, 1e-5),
     (15.0, 20, 10.0, 85.634560, 1e-5),
 ]
+COMPLEX_LIMIT_CASES = [(8.0, 10, 0.1), (8.0, 10, 10.0)]
 
 
 def _yamaguchi_kernel(r1, r2):
@@ -44,6 +45,12 @@ def _yamaguchi_kernel(r1, r2):
     import jax.numpy as jnp
 
     return -2.0 * BETA * (ALPHA + BETA) ** 2 * jnp.exp(-BETA * (r1 + r2)) * HBAR2_2MU
+
+
+def _complex_yamaguchi_kernel(r1, r2, imag_strength):
+    """Artificial optical variant used to test the `eig` real-potential limit."""
+
+    return _yamaguchi_kernel(r1, r2) * (1.0 + 1.0j * imag_strength)
 
 
 def _phase_from_direct_rmatrix(solver, potential):
@@ -139,3 +146,39 @@ def test_yamaguchi_direct_matches_spectral(a, n, E, _, __):
     direct_delta = float(_phase_from_direct_rmatrix(solver, V)[0, 0])
 
     assert abs(direct_delta - spectral_delta) < 1.0e-10
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("a,n,E", COMPLEX_LIMIT_CASES)
+def test_complex_yamaguchi_eig_matches_real_limit(a, n, E):
+    """The complex-spectrum path approaches the real Yamaguchi result as Im(V) -> 0."""
+
+    import lax as lm
+
+    imag_strength = 1.0e-8
+    real_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=n, scale=a),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
+        operators=("T+L",),
+        solvers=("spectrum", "phases"),
+        energies=np.array([E]),
+        method="eigh",
+    )
+    complex_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=n, scale=a),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
+        operators=("T+L",),
+        solvers=("spectrum", "phases"),
+        energies=np.array([E]),
+        V_is_complex=True,
+        method="eig",
+    )
+    real_potential = lm.assemble_nonlocal(real_solver.mesh, _yamaguchi_kernel)
+    complex_potential = lm.assemble_nonlocal(
+        complex_solver.mesh,
+        lambda r1, r2: _complex_yamaguchi_kernel(r1, r2, imag_strength),
+    )
+    real_phase = float(real_solver.phases(real_solver.spectrum(real_potential))[0, 0])
+    complex_phase = float(complex_solver.phases(complex_solver.spectrum(complex_potential))[0, 0])
+
+    assert abs(complex_phase - real_phase) < 1.0e-7

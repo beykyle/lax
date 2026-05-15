@@ -107,6 +107,19 @@ class FourierTransform(Protocol):
         ...
 
 
+class DoubleFourierTransform(Protocol):
+    """Callable interface for kernel transforms on left/right momentum grids."""
+
+    def __call__(
+        self,
+        values: jax.Array,
+        left_channel_index: int = 0,
+        right_channel_index: int | None = None,
+    ) -> jax.Array:
+        """Project a mesh-space kernel onto left/right momentum grids."""
+        ...
+
+
 class Integrator(Protocol):
     """Callable interface for norms and expectation values."""
 
@@ -189,11 +202,13 @@ class Solver:
     from_grid_vector: FromGridVectorTransform | None = None
     to_grid_matrix: GridMatrixTransform | None = None
     fourier: FourierTransform | None = None
+    double_fourier_transform: DoubleFourierTransform | None = None
     integrate: Integrator | None = None
 
 
 __all__ = [
     "BoundaryValues",
+    "DoubleFourierTransform",
     "DirectRMatrixKernel",
     "EigenpairAccessor",
     "EnergyLike",
