@@ -1,7 +1,12 @@
 """Mesh-independent spectral types, observables, and matching utilities."""
 
 from lax.spectral.interpolation import pade_interpolate
-from lax.spectral.matching import phases_from_S, smatrix_from_R
+from lax.spectral.matching import (
+    CoupledChannelParameters,
+    coupled_channel_parameters_from_S,
+    phases_from_S,
+    smatrix_from_R,
+)
 from lax.spectral.observables import (
     greens_from_spectrum,
     rmatrix_from_spectrum,
@@ -11,6 +16,8 @@ from lax.spectral.types import Spectrum
 
 __all__ = [
     "Spectrum",
+    "CoupledChannelParameters",
+    "coupled_channel_parameters_from_S",
     "greens_from_spectrum",
     "pade_interpolate",
     "phases_from_S",

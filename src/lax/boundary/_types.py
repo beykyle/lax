@@ -181,7 +181,7 @@ class TransformMatrices:
 
 @dataclass(frozen=True)
 class Solver:
-    """Compiled solver bundle containing caches and bound runtime callables."""
+    """Compiled solver bundle containing caches and pickle-safe runtime callables."""
 
     mesh: Mesh
     operators: OperatorMatrices

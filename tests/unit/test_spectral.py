@@ -7,6 +7,7 @@ import pytest
 from lax.boundary._types import BoundaryValues
 from lax.spectral import (
     Spectrum,
+    coupled_channel_parameters_from_S,
     greens_from_spectrum,
     phases_from_S,
     rmatrix_from_spectrum,
@@ -133,3 +134,51 @@ def test_phases_from_S_returns_half_argument() -> None:
     phases = np.asarray(phases_from_S(S))
 
     assert np.allclose(phases, np.array([delta]))
+
+
+def test_coupled_channel_parameters_from_s_recovers_eigenphases_and_mixing() -> None:
+    """Coupled-channel parameter extraction recovers a 2x2 symmetric-unitary input."""
+
+    phase_1 = -0.21
+    phase_2 = 0.37
+    mixing_angle = 0.14
+    rotation = np.array(
+        [
+            [np.cos(mixing_angle), -np.sin(mixing_angle)],
+            [np.sin(mixing_angle), np.cos(mixing_angle)],
+        ]
+    )
+    eigenvalues = np.diag([np.exp(2.0j * phase_1), np.exp(2.0j * phase_2)])
+    S = rotation @ eigenvalues @ rotation.T
+
+    parameters = coupled_channel_parameters_from_S(jnp.asarray(S))
+
+    assert np.allclose(np.asarray(parameters.phase_1), phase_1)
+    assert np.allclose(np.asarray(parameters.phase_2), phase_2)
+    assert np.allclose(np.asarray(parameters.mixing_angle), mixing_angle)
+
+
+def test_coupled_channel_parameters_from_s_handles_decoupled_limit() -> None:
+    """The decoupled limit has zero mixing angle."""
+
+    phase_1 = 0.22
+    phase_2 = -0.41
+    S = jnp.asarray(
+        [
+            [np.exp(2.0j * phase_1), 0.0 + 0.0j],
+            [0.0 + 0.0j, np.exp(2.0j * phase_2)],
+        ]
+    )
+
+    parameters = coupled_channel_parameters_from_S(S)
+
+    assert np.allclose(np.asarray(parameters.phase_1), phase_2)
+    assert np.allclose(np.asarray(parameters.phase_2), phase_1)
+    assert np.allclose(np.asarray(parameters.mixing_angle), 0.0)
+
+
+def test_coupled_channel_parameters_from_s_rejects_non_2x2_inputs() -> None:
+    """Coupled-channel parameter extraction is defined only for 2x2 S-matrices."""
+
+    with pytest.raises(ValueError, match="2x2"):
+        coupled_channel_parameters_from_S(jnp.eye(3, dtype=jnp.complex128))

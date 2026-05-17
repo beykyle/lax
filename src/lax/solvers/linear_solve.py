@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import cast
 
 import jax
@@ -11,6 +12,38 @@ from lax.boundary._types import DirectRMatrixKernel, Mesh, OperatorMatrices
 from lax.types import ChannelSpec
 
 from .assembly import assemble_block_hamiltonian, build_Q
+
+
+@dataclass(frozen=True)
+class _DirectRMatrixKernel:
+    """Pickle-safe direct R-matrix kernel backed by a module-level JIT function."""
+
+    mesh: Mesh
+    operators: OperatorMatrices
+    channels: tuple[ChannelSpec, ...]
+    energies: jax.Array
+    q: jax.Array
+    channel_radius: float
+    matrix_size: int
+    mass_factor: float
+
+    def __call__(self, potential: jax.Array) -> jax.Array:
+        """Evaluate the direct R-matrix on the compile-time energy grid."""
+
+        return cast(
+            jax.Array,
+            _RMATRIX_DIRECT_JIT(
+                potential,
+                self.mesh,
+                self.operators,
+                self.channels,
+                self.energies,
+                self.q,
+                self.channel_radius,
+                self.matrix_size,
+                self.mass_factor,
+            ),
+        )
 
 
 def make_rmatrix_direct_kernel(
@@ -25,35 +58,62 @@ def make_rmatrix_direct_kernel(
     channel_radius = mesh.scale
     matrix_size = mesh.n * len(channels)
     mass_factor = _uniform_mass_factor(channels)
-
-    def rmatrix_direct(potential: jax.Array) -> jax.Array:
-        hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
-
-        def one_energy(energy: jax.Array) -> jax.Array:
-            energy_dimless = energy / mass_factor
-            matrix = hamiltonian - energy_dimless * jnp.eye(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
-                matrix_size,
-                dtype=hamiltonian.dtype,
-            )
-            solved = cast(
-                jax.Array,
-                jnp.linalg.solve(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
-                    matrix,
-                    q,
-                ),
-            )
-            values: jax.Array = (q.T @ solved) / channel_radius
-            return values
-
-        result: jax.Array = jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
-            energies
-        )
-        return result
-
     return cast(
         DirectRMatrixKernel,
-        jax.jit(rmatrix_direct),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
+        _DirectRMatrixKernel(
+            mesh=mesh,
+            operators=operators,
+            channels=channels,
+            energies=energies,
+            q=q,
+            channel_radius=channel_radius,
+            matrix_size=matrix_size,
+            mass_factor=mass_factor,
+        ),
     )
+
+
+def _rmatrix_direct(
+    potential: jax.Array,
+    mesh: Mesh,
+    operators: OperatorMatrices,
+    channels: tuple[ChannelSpec, ...],
+    energies: jax.Array,
+    q: jax.Array,
+    channel_radius: float,
+    matrix_size: int,
+    mass_factor: float,
+) -> jax.Array:
+    """Return the direct R-matrix across the compile-time energy grid."""
+
+    hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
+
+    def one_energy(energy: jax.Array) -> jax.Array:
+        energy_dimless = energy / mass_factor
+        matrix = hamiltonian - energy_dimless * jnp.eye(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
+            matrix_size,
+            dtype=hamiltonian.dtype,
+        )
+        solved = cast(
+            jax.Array,
+            jnp.linalg.solve(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+                matrix,
+                q,
+            ),
+        )
+        values: jax.Array = (q.T @ solved) / channel_radius
+        return values
+
+    result: jax.Array = jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+        energies
+    )
+    return result
+
+
+_RMATRIX_DIRECT_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+    _rmatrix_direct,
+    static_argnames=("channels", "matrix_size"),
+)
 
 
 def _uniform_mass_factor(channels: tuple[ChannelSpec, ...]) -> float:

@@ -61,3 +61,22 @@ def test_compute_boundary_values_hankel_conjugation_for_real_eta() -> None:
         np.conj(np.asarray(boundary.H_minus)[0, 0]),
         atol=1.0e-12,
     )
+
+
+def test_compute_boundary_values_closed_channel_whittaker_ratio_is_finite() -> None:
+    """Closed-channel Whittaker values provide a finite Bloch ratio `H'/H`."""
+
+    channel = ChannelSpec(l=0, threshold=1.0, mass_factor=1.0)
+    boundary = compute_boundary_values(
+        (channel,),
+        energies=np.array([0.25]),
+        channel_radius=4.0,
+    )
+
+    value = np.asarray(boundary.H_plus)[0, 0]
+    derivative = np.asarray(boundary.H_plus_p)[0, 0]
+
+    assert np.asarray(boundary.is_open)[0, 0] is np.False_
+    assert np.isfinite(value)
+    assert np.isfinite(derivative)
+    assert np.isfinite(derivative / value)

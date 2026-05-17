@@ -15,6 +15,12 @@ from lax.solvers import (
     make_rmatrix_direct_kernel,
     make_spectrum_kernel,
 )
+from lax.solvers.observables import (
+    _closed_channel_bloch,
+    _decouple_closed_channels,
+    _project_open_channels,
+)
+from lax.spectral.matching import smatrix_from_R
 from lax.types import ChannelSpec, MeshSpec
 
 pytest.importorskip("jax")
@@ -215,6 +221,91 @@ def test_coupled_channel_rmatrix_matches_direct_solver() -> None:
     assert np.allclose(np.asarray(rmatrix(spectrum, 0.25)), np.asarray(direct[0]), atol=1.0e-10)
     assert np.asarray(smatrix(spectrum)).shape == (1, 2, 2)
     assert np.asarray(phases(spectrum)).shape == (1, 2)
+
+
+def test_closed_channel_decoupling_matches_direct_bloch_updated_rmatrix() -> None:
+    """Closed-channel decoupling matches a direct solve with the Whittaker Bloch update."""
+
+    mesh, operators = build_legendre_x(n=4, scale=8.0, operators={"T+L", "1/r^2"})
+    channels = (
+        ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),
+        ChannelSpec(l=1, threshold=1.5, mass_factor=2.0),
+    )
+    potential = jnp.asarray(
+        [
+            [
+                [0.3, 0.2, 0.1, 0.0],
+                [0.04, 0.03, 0.02, 0.01],
+            ],
+            [
+                [0.04, 0.03, 0.02, 0.01],
+                [0.1, 0.0, -0.1, -0.2],
+            ],
+        ]
+    )
+    energy = 0.25
+    boundary = BoundaryValues(
+        H_plus=jnp.asarray([[1.0 + 1.0j, 2.0 + 0.0j]]),
+        H_minus=jnp.asarray([[1.0 - 1.0j, 2.0 + 0.0j]]),
+        H_plus_p=jnp.asarray([[0.2 + 0.1j, 0.6 + 0.0j]]),
+        H_minus_p=jnp.asarray([[0.2 - 0.1j, 0.6 + 0.0j]]),
+        is_open=jnp.asarray([[True, False]]),
+    )
+    spectrum_kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
+    spectrum = spectrum_kernel(potential)
+    rmatrix, smatrix, _, _, _, _ = bind_observables(
+        mesh,
+        channels,
+        energies=jnp.asarray([energy]),
+        boundary=boundary,
+    )
+
+    assert smatrix is not None
+
+    hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, potential))
+    q = np.asarray(build_Q(mesh, channels))
+    base_matrix = hamiltonian - np.eye(hamiltonian.shape[0]) * (energy / channels[0].mass_factor)
+    base_solved = np.linalg.solve(base_matrix, q)
+    raw_rmatrix = (q.T @ base_solved) / mesh.scale
+    bloch = np.asarray(
+        _closed_channel_bloch(
+            boundary.H_plus[0],
+            boundary.H_plus_p[0],
+            boundary.is_open[0],
+        )
+    )
+    decoupled = np.asarray(
+        _decouple_closed_channels(
+            jnp.asarray(raw_rmatrix),
+            boundary.H_plus[0],
+            boundary.H_plus_p[0],
+            boundary.is_open[0],
+        )
+    )
+
+    bloch_matrix = np.diag(bloch)
+    updated_matrix = (
+        hamiltonian
+        - (q @ bloch_matrix @ q.T) / mesh.scale
+        - np.eye(hamiltonian.shape[0]) * (energy / channels[0].mass_factor)
+    )
+    solved = np.linalg.solve(updated_matrix, q)
+    direct_rmatrix = (q.T @ solved) / mesh.scale
+
+    assert np.allclose(decoupled[0, 0], direct_rmatrix[0, 0], atol=5.0e-5, rtol=5.0e-5)
+
+    projected_rmatrix, projected_boundary = _project_open_channels(
+        jnp.asarray(direct_rmatrix),
+        boundary.H_plus[0],
+        boundary.H_minus[0],
+        boundary.H_plus_p[0],
+        boundary.H_minus_p[0],
+        boundary.is_open[0],
+    )
+    direct_smatrix = np.asarray(smatrix_from_R(projected_rmatrix, projected_boundary))
+    bound_smatrix = np.asarray(smatrix(spectrum))
+
+    assert np.allclose(bound_smatrix[0, 0, 0], direct_smatrix[0, 0], atol=5.0e-5, rtol=5.0e-5)
 
 
 def test_compile_defaults_to_eig_for_complex_cpu_problems() -> None:

@@ -67,6 +67,86 @@ def build_legendre_x(
     return mesh, operators_out
 
 
+@register("legendre", "x(1-x)")
+def build_legendre_x_one_minus_x(
+    *,
+    n: int,
+    scale: float,
+    operators: set[str],
+    **extras: object,
+) -> tuple[Mesh, OperatorMatrices]:
+    """Build shifted-Legendre-x(1-x) mesh data. [Baye eqs. 3.138, 3.142-3.144]"""
+
+    del extras
+    a = float(scale)
+    nodes, weights, radii = _shifted_legendre_quadrature(n, a)
+    kinetic = _legendre_x_one_minus_x_kinetic(nodes, a)
+
+    mesh = Mesh(
+        family="legendre",
+        regularization="x(1-x)",
+        n=n,
+        scale=a,
+        nodes=_to_jax_array(nodes),
+        weights=_to_jax_array(weights),
+        radii=_to_jax_array(radii),
+        basis_at_boundary=_to_jax_array(np.zeros(n, dtype=np.float64)),
+    )
+
+    include_kinetic = bool({"T", "T+L", "TpL"} & operators)
+    operators_out = OperatorMatrices(
+        T=_to_jax_array(kinetic) if include_kinetic else None,
+        TpL=_to_jax_array(kinetic) if include_kinetic else None,
+        inv_r=_diagonal_operator(1.0 / radii) if {"1/r", "inv_r"} & operators else None,
+        inv_r2=(
+            _diagonal_operator(1.0 / (radii**2))
+            if {"1/r^2", "1/r²", "inv_r2"} & operators
+            else None
+        ),
+    )
+    return mesh, operators_out
+
+
+@register("legendre", "x^3/2")
+def build_legendre_x_three_halves(
+    *,
+    n: int,
+    scale: float,
+    operators: set[str],
+    **extras: object,
+) -> tuple[Mesh, OperatorMatrices]:
+    """Build shifted-Legendre-x^3/2 mesh data. [Baye eqs. 3.130, 3.136, 3.137]"""
+
+    del extras
+    a = float(scale)
+    nodes, weights, radii = _shifted_legendre_quadrature(n, a)
+    basis_at_boundary = _legendre_boundary_values(nodes, a)
+    t_plus_l = _legendre_x_three_halves_t_plus_l(nodes, a)
+
+    mesh = Mesh(
+        family="legendre",
+        regularization="x^3/2",
+        n=n,
+        scale=a,
+        nodes=_to_jax_array(nodes),
+        weights=_to_jax_array(weights),
+        radii=_to_jax_array(radii),
+        basis_at_boundary=_to_jax_array(basis_at_boundary),
+    )
+
+    include_kinetic = bool({"T+L", "TpL"} & operators)
+    operators_out = OperatorMatrices(
+        TpL=_to_jax_array(t_plus_l) if include_kinetic else None,
+        inv_r=_diagonal_operator(1.0 / radii) if {"1/r", "inv_r"} & operators else None,
+        inv_r2=(
+            _diagonal_operator(1.0 / (radii**2))
+            if {"1/r^2", "1/r²", "inv_r2"} & operators
+            else None
+        ),
+    )
+    return mesh, operators_out
+
+
 def _legendre_x_t_plus_l(nodes: np.ndarray, scale: float) -> np.ndarray:
     """Return the Bloch-augmented kinetic matrix. [Desc. eqs. 22, 23]"""
 
@@ -117,6 +197,110 @@ def _legendre_x_derivative(nodes: np.ndarray, scale: float) -> np.ndarray:
     return derivative / scale
 
 
+def _shifted_legendre_quadrature(n: int, scale: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return shifted-Legendre nodes, weights, and physical radii on `(0, a)`."""
+
+    x_raw: np.ndarray
+    w_raw: np.ndarray
+    x_raw, w_raw = np.polynomial.legendre.leggauss(n)
+    nodes = 0.5 * (x_raw + 1.0)
+    weights = 0.5 * w_raw
+    radii = scale * nodes
+    return nodes, weights, radii
+
+
+def _legendre_boundary_values(nodes: np.ndarray, scale: float) -> np.ndarray:
+    """Return basis values at the channel boundary `r = a`."""
+
+    n = nodes.size
+    parity = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+    boundary_sign = -parity if n % 2 == 1 else parity
+    return boundary_sign / np.sqrt(scale * nodes * (1.0 - nodes))
+
+
+def _legendre_x_one_minus_x_kinetic(nodes: np.ndarray, scale: float) -> np.ndarray:
+    """Return the confined shifted-Legendre-x(1-x) kinetic matrix. [Baye eqs. 3.142-3.144]"""
+
+    n = nodes.size
+    matrix = np.zeros((n, n), dtype=np.float64)
+
+    radial_factor = nodes * (1.0 - nodes)
+    diagonal = (n * (n + 1.0) + 1.0 / radial_factor) / (3.0 * scale**2 * radial_factor)
+    np.fill_diagonal(matrix, diagonal)
+
+    row_idx: np.ndarray
+    col_idx: np.ndarray
+    row_idx, col_idx = np.triu_indices(n, k=1)
+    sign = np.where((row_idx - col_idx) % 2 == 0, 1.0, -1.0)
+    rij = np.sqrt(
+        nodes[row_idx]
+        * (1.0 - nodes[row_idx])
+        * nodes[col_idx]
+        * (1.0 - nodes[col_idx])
+    )
+    off_diagonal = (
+        sign
+        * (nodes[row_idx] + nodes[col_idx] - 2.0 * nodes[row_idx] * nodes[col_idx])
+        / (scale**2 * rij * (nodes[row_idx] - nodes[col_idx]) ** 2)
+    )
+    matrix[row_idx, col_idx] = off_diagonal
+    matrix[col_idx, row_idx] = off_diagonal
+
+    all_row, all_col = np.indices((n, n))
+    correction_sign = np.where((all_row - all_col) % 2 == 0, 1.0, -1.0)
+    rij_full = np.sqrt(
+        nodes[all_row]
+        * (1.0 - nodes[all_row])
+        * nodes[all_col]
+        * (1.0 - nodes[all_col])
+    )
+    correction = correction_sign * n * (n + 1.0) / (scale**2 * (2.0 * n + 1.0) * rij_full)
+    return matrix - correction
+
+
+def _legendre_x_three_halves_t_plus_l(nodes: np.ndarray, scale: float) -> np.ndarray:
+    """Return the shifted-Legendre-x^3/2 `T+L` matrix. [Baye eqs. 3.136, 3.137]"""
+
+    n = nodes.size
+    matrix = np.zeros((n, n), dtype=np.float64)
+
+    diagonal_numerator = (
+        4.0 * n * (n + 1.0) * (3.0 + nodes) * (1.0 - nodes)
+        + 3.0 * nodes**2
+        - 30.0 * nodes
+        + 7.0
+    )
+    diagonal = diagonal_numerator / (12.0 * scale**2 * nodes**2 * (1.0 - nodes) ** 2)
+    np.fill_diagonal(matrix, diagonal)
+
+    row_idx: np.ndarray
+    col_idx: np.ndarray
+    row_idx, col_idx = np.triu_indices(n, k=1)
+    sign = np.where((row_idx + col_idx) % 2 == 0, 1.0, -1.0)
+    denominator = np.sqrt(
+        nodes[row_idx]
+        * nodes[col_idx]
+        * (1.0 - nodes[row_idx])
+        * (1.0 - nodes[col_idx])
+    )
+    numerator = (
+        n * (n + 1.0)
+        + 1.5
+        + (
+            nodes[row_idx] ** 2
+            + nodes[col_idx] ** 2
+            - nodes[row_idx] * nodes[col_idx] * (nodes[row_idx] + nodes[col_idx])
+        )
+        / (nodes[row_idx] - nodes[col_idx]) ** 2
+        - 1.0 / (1.0 - nodes[row_idx])
+        - 1.0 / (1.0 - nodes[col_idx])
+    )
+    off_diagonal = sign * numerator / (scale**2 * denominator)
+    matrix[row_idx, col_idx] = off_diagonal
+    matrix[col_idx, row_idx] = off_diagonal
+    return matrix
+
+
 def _to_jax_array(values: np.ndarray) -> jax.Array:
     """Convert a NumPy array to a runtime JAX array with an explicit type."""
 
@@ -132,4 +316,8 @@ def _diagonal_operator(values: np.ndarray) -> jax.Array:
     return matrix
 
 
-__all__ = ["build_legendre_x"]
+__all__ = [
+    "build_legendre_x",
+    "build_legendre_x_one_minus_x",
+    "build_legendre_x_three_halves",
+]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import cast
 
 import jax
@@ -11,6 +12,58 @@ import scipy.special as sc  # pyright: ignore[reportMissingTypeStubs] -- SciPy d
 
 from lax.boundary._types import DoubleFourierTransform, FourierTransform, Mesh, TransformMatrices
 from lax.meshes._basis_eval import basis_at
+
+
+@dataclass(frozen=True)
+class _FourierProjection:
+    """Pickle-safe Fourier-Bessel transform."""
+
+    fourier_matrices: jax.Array
+
+    def __call__(self, values: jax.Array, channel_index: int = 0) -> jax.Array:
+        """Project mesh coefficients or kernels onto the momentum grid."""
+
+        if values.ndim == 1:
+            return cast(
+                jax.Array,
+                _FOURIER_VECTOR_JIT(values, self.fourier_matrices, channel_index),
+            )
+        return cast(
+            jax.Array,
+            _FOURIER_MATRIX_JIT(values, self.fourier_matrices, channel_index),
+        )
+
+
+@dataclass(frozen=True)
+class _DoubleFourierProjection:
+    """Pickle-safe double Fourier-Bessel transform."""
+
+    fourier_matrices: jax.Array
+
+    def __call__(
+        self,
+        values: jax.Array,
+        left_channel_index: int = 0,
+        right_channel_index: int | None = None,
+    ) -> jax.Array:
+        """Project a mesh-space kernel onto left/right momentum grids."""
+
+        if values.ndim != 2:
+            msg = "double_fourier_transform expects a rank-2 mesh-space kernel."
+            raise ValueError(msg)
+
+        resolved_right_channel_index = (
+            left_channel_index if right_channel_index is None else right_channel_index
+        )
+        return cast(
+            jax.Array,
+            _DOUBLE_FOURIER_JIT(
+                values,
+                self.fourier_matrices,
+                left_channel_index,
+                resolved_right_channel_index,
+            ),
+        )
 
 
 def compute_F_momentum(
@@ -80,20 +133,7 @@ def make_fourier(transform_matrices: TransformMatrices) -> FourierTransform:
         msg = "TransformMatrices.F_momentum is required to build the Fourier transform."
         raise ValueError(msg)
 
-    fourier_matrices = transform_matrices.F_momentum
-
-    def fourier(values: jax.Array, channel_index: int = 0) -> jax.Array:
-        matrix = fourier_matrices[channel_index]
-        if values.ndim == 1:
-            result: jax.Array = matrix @ values
-            return result
-        result = matrix @ values @ matrix.T
-        return result
-
-    return cast(
-        FourierTransform,
-        jax.jit(fourier, static_argnames=("channel_index",)),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
-    )
+    return _FourierProjection(fourier_matrices=transform_matrices.F_momentum)
 
 
 def make_double_fourier(transform_matrices: TransformMatrices) -> DoubleFourierTransform:
@@ -105,32 +145,54 @@ def make_double_fourier(transform_matrices: TransformMatrices) -> DoubleFourierT
         )
         raise ValueError(msg)
 
-    fourier_matrices = transform_matrices.F_momentum
-
-    def double_fourier_transform(
-        values: jax.Array,
-        left_channel_index: int = 0,
-        right_channel_index: int | None = None,
-    ) -> jax.Array:
-        if values.ndim != 2:
-            msg = "double_fourier_transform expects a rank-2 mesh-space kernel."
-            raise ValueError(msg)
-
-        resolved_right_channel_index = (
-            left_channel_index if right_channel_index is None else right_channel_index
-        )
-        left_matrix = fourier_matrices[left_channel_index]
-        right_matrix = fourier_matrices[resolved_right_channel_index]
-        result: jax.Array = left_matrix @ values @ right_matrix.T
-        return result
-
     return cast(
         DoubleFourierTransform,
-        jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
-            double_fourier_transform,
-            static_argnames=("left_channel_index", "right_channel_index"),
-        ),
+        _DoubleFourierProjection(fourier_matrices=transform_matrices.F_momentum),
     )
+
+
+def _fourier_vector(values: jax.Array, fourier_matrices: jax.Array, channel_index: int) -> jax.Array:
+    """Project mesh coefficients `(N,)` onto the momentum grid `(M_k,)`."""
+
+    matrix = fourier_matrices[channel_index]
+    result: jax.Array = matrix @ values
+    return result
+
+
+def _fourier_matrix(values: jax.Array, fourier_matrices: jax.Array, channel_index: int) -> jax.Array:
+    """Project a mesh kernel `(N, N)` onto the momentum grid `(M_k, M_k)`."""
+
+    matrix = fourier_matrices[channel_index]
+    result: jax.Array = matrix @ values @ matrix.T
+    return result
+
+
+def _double_fourier(
+    values: jax.Array,
+    fourier_matrices: jax.Array,
+    left_channel_index: int,
+    right_channel_index: int,
+) -> jax.Array:
+    """Project a mesh kernel onto left/right momentum grids."""
+
+    left_matrix = fourier_matrices[left_channel_index]
+    right_matrix = fourier_matrices[right_channel_index]
+    result: jax.Array = left_matrix @ values @ right_matrix.T
+    return result
+
+
+_FOURIER_VECTOR_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+    _fourier_vector,
+    static_argnames=("channel_index",),
+)
+_FOURIER_MATRIX_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+    _fourier_matrix,
+    static_argnames=("channel_index",),
+)
+_DOUBLE_FOURIER_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+    _double_fourier,
+    static_argnames=("left_channel_index", "right_channel_index"),
+)
 
 
 __all__ = ["compute_F_momentum", "make_double_fourier", "make_fourier"]

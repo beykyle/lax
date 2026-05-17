@@ -27,6 +27,32 @@ def test_compute_b_grid_matches_basis_evaluation() -> None:
     assert np.allclose(computed, direct)
 
 
+@pytest.mark.parametrize(
+    ("family", "regularization", "scale", "grid"),
+    [
+        ("legendre", "x(1-x)", 2.0, jnp.linspace(1.0e-3, 1.999, 9)),
+        ("legendre", "x^3/2", 6.0, jnp.linspace(1.0e-3, 5.999, 9)),
+        ("laguerre", "modified_x^2", 1.0, jnp.linspace(1.0e-3, 6.0, 9)),
+    ],
+)
+def test_compute_b_grid_matches_basis_evaluation_for_phase8_regularizations(
+    family: str,
+    regularization: str,
+    scale: float,
+    grid: jax.Array,
+) -> None:
+    """`compute_B_grid` agrees with the registered evaluators for Phase 8 meshes."""
+
+    operators = {"T"} if family == "laguerre" or regularization == "x(1-x)" else {"T+L"}
+    mesh, _ = build_mesh(family, regularization, n=5, scale=scale, operators=operators)
+
+    direct = np.asarray(basis_at(mesh, grid))
+    computed = np.asarray(compute_B_grid(mesh, grid))
+
+    assert computed.shape == (9, 5)
+    assert np.allclose(computed, direct)
+
+
 def test_compile_binds_to_grid_transforms() -> None:
     """`compile()` exposes vector and matrix grid transforms when a grid is requested."""
 

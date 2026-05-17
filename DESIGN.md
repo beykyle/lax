@@ -187,6 +187,15 @@ $$G_{nm}(E) = \sum_k \frac{u_{kn} u_{km}}{\varepsilon_k - E} \tag{15}$$
 
 **Non-Hermitian Lanczos in JAX would benefit large complex problems but is non-trivial.** Listed as future work; the v1 fallback for the GPU+complex case is per-energy linear solves (R-matrix only).
 
+**Compiled solvers must be round-trip serializable.** `compile()` is expensive enough
+that users must be able to cache a `Solver` across Python processes or sessions. The
+preferred contract is stdlib `pickle`; `dill` is an acceptable fallback only if a
+specific JAX runtime object proves impossible to serialize cleanly with stdlib tools.
+This constrains the implementation: the `Solver` bundle may not store local closures or
+other non-importable callables. Bound runtime entry points must be represented by
+module-level callable objects and/or explicit reconstruction logic so the solver's
+cached mesh/operator/boundary state survives a serialization round trip.
+
 ### Non-goals (for v1)
 
 - Cross-section calculation (user computes from S).
@@ -277,7 +286,10 @@ Solver
     └── integrate(...)
 ```
 
-For energy-independent V, `solver.spectrum(V)` is called once per V. For energy-dependent V, the user wraps it in `jax.vmap` over their per-grid-point V batch.
+The bound runtime callables are implemented as **module-level callable objects**, not
+local closures, so a compiled solver can be serialized and restored. For
+energy-independent V, `solver.spectrum(V)` is called once per V. For energy-dependent
+V, the user wraps it in `jax.vmap` over their per-grid-point V batch.
 
 ---
 
@@ -2241,7 +2253,7 @@ All numerical-data dataclasses (`Mesh`, `OperatorMatrices`, `BoundaryValues`, `T
 - Numerical leaves flow through `jit`, `vmap`, `grad` transparently.
 - A `Spectrum` returned from one function can be fed into another as a single argument — JAX traces through it without manual unpacking.
 
-`Solver` is **not** a pytree (it holds Python callables). It is a plain frozen dataclass used as a namespace.
+`Solver` is **not** a pytree (it holds Python callables). It is a plain frozen dataclass used as a namespace. Those callables must remain importable / reconstructible so a compiled solver is pickleable.
 
 ### 17.2 Method dispatch and tracing
 

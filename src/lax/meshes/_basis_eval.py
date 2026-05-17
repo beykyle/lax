@@ -122,4 +122,124 @@ def laguerre_x_basis_at(mesh: Mesh, radii: np.ndarray) -> np.ndarray:
     return values
 
 
+@register_basis_evaluator("legendre", "x(1-x)")
+def legendre_x_one_minus_x_basis_at(mesh: Mesh, radii: np.ndarray) -> np.ndarray:
+    """Evaluate shifted-Legendre-x(1-x) basis functions on a physical radial grid."""
+
+    basis_size = mesh.n
+    channel_radius = mesh.scale
+    nodes = np.asarray(mesh.nodes)
+    weights = np.asarray(mesh.weights)
+    dimensionless_radii = radii / channel_radius
+    legendre_arg = 2.0 * dimensionless_radii - 1.0
+    legendre_values = sc.eval_legendre(basis_size, legendre_arg)
+
+    signs = _legendre_signs(basis_size)
+    numerator = (
+        signs[None, :]
+        * dimensionless_radii[:, None]
+        * (1.0 - dimensionless_radii[:, None])
+        * legendre_values[:, None]
+    )
+    denominator = (
+        np.sqrt(channel_radius * nodes * (1.0 - nodes))[None, :]
+        * (dimensionless_radii[:, None] - nodes[None, :])
+    )
+
+    close_mask = np.isclose(dimensionless_radii[:, None], nodes[None, :])
+    values = np.empty_like(numerator)
+    np.divide(numerator, denominator, out=values, where=~close_mask)
+
+    if np.any(close_mask):
+        limits = 1.0 / np.sqrt(channel_radius * weights)
+        row_indices, col_indices = np.nonzero(close_mask)
+        values[row_indices, col_indices] = limits[col_indices]
+
+    return values
+
+
+@register_basis_evaluator("legendre", "x^3/2")
+def legendre_x_three_halves_basis_at(mesh: Mesh, radii: np.ndarray) -> np.ndarray:
+    """Evaluate shifted-Legendre-x^3/2 basis functions on a physical radial grid."""
+
+    basis_size = mesh.n
+    channel_radius = mesh.scale
+    nodes = np.asarray(mesh.nodes)
+    weights = np.asarray(mesh.weights)
+    dimensionless_radii = radii / channel_radius
+    legendre_arg = 2.0 * dimensionless_radii - 1.0
+    legendre_values = sc.eval_legendre(basis_size, legendre_arg)
+
+    signs = _legendre_signs(basis_size)
+    numerator = (
+        signs[None, :]
+        * dimensionless_radii[:, None] ** 1.5
+        * legendre_values[:, None]
+        * np.sqrt((1.0 - nodes) / nodes)[None, :]
+    )
+    denominator = np.sqrt(channel_radius) * (dimensionless_radii[:, None] - nodes[None, :])
+
+    close_mask = np.isclose(dimensionless_radii[:, None], nodes[None, :])
+    values = np.empty_like(numerator)
+    np.divide(numerator, denominator, out=values, where=~close_mask)
+
+    if np.any(close_mask):
+        limits = 1.0 / np.sqrt(channel_radius * weights)
+        row_indices, col_indices = np.nonzero(close_mask)
+        values[row_indices, col_indices] = limits[col_indices]
+
+    return values
+
+
+@register_basis_evaluator("laguerre", "modified_x^2")
+def laguerre_modified_x2_basis_at(mesh: Mesh, radii: np.ndarray) -> np.ndarray:
+    """Evaluate modified-Laguerre-x^2 basis functions on a physical radial grid."""
+
+    basis_size = mesh.n
+    scale = mesh.scale
+    nodes = np.asarray(mesh.nodes)
+    weights = np.asarray(mesh.weights)
+    alpha = 0.5
+    dimensionless_radii = radii / scale
+    squared_radii = dimensionless_radii**2
+    laguerre_values = sc.eval_genlaguerre(basis_size, alpha, squared_radii)
+
+    normalization = np.exp(
+        -0.5
+        * (
+            sc.gammaln(basis_size + alpha + 1.0)
+            - sc.gammaln(float(basis_size) + 1.0)
+            - np.log(2.0)
+        )
+    )
+    signs = np.where(np.arange(basis_size) % 2 == 0, 1.0, -1.0)
+    numerator = (
+        signs[None, :]
+        * normalization
+        * nodes[None, :]
+        * dimensionless_radii[:, None] ** (alpha + 0.5)
+        * np.exp(-0.5 * squared_radii[:, None])
+        * laguerre_values[:, None]
+    )
+    denominator = np.sqrt(scale) * (squared_radii[:, None] - nodes[None, :] ** 2)
+
+    close_mask = np.isclose(squared_radii[:, None], nodes[None, :] ** 2)
+    values = np.empty_like(numerator)
+    np.divide(numerator, denominator, out=values, where=~close_mask)
+
+    if np.any(close_mask):
+        limits = 1.0 / np.sqrt(scale * weights)
+        row_indices, col_indices = np.nonzero(close_mask)
+        values[row_indices, col_indices] = limits[col_indices]
+
+    return values
+
+
+def _legendre_signs(basis_size: int) -> np.ndarray:
+    """Return the shifted-Legendre sign pattern `(-1)^(N-j)` in zero-based indexing."""
+
+    parity = np.where(np.arange(basis_size) % 2 == 0, 1.0, -1.0)
+    return -parity if basis_size % 2 == 1 else parity
+
+
 __all__ = ["basis_at", "register_basis_evaluator"]

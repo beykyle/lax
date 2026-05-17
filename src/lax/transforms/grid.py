@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import cast
 
 import jax
@@ -16,6 +17,44 @@ from lax.boundary._types import (
     Mesh,
 )
 from lax.meshes._basis_eval import basis_at
+
+
+@dataclass(frozen=True)
+class _GridVectorProjection:
+    """Pickle-safe mesh-to-grid vector projection."""
+
+    basis_grid: jax.Array
+
+    def __call__(self, values: jax.Array) -> jax.Array:
+        """Project mesh coefficients onto the configured radial grid."""
+
+        return cast(jax.Array, _TO_GRID_VECTOR_JIT(values, self.basis_grid))
+
+
+@dataclass(frozen=True)
+class _FromGridVectorProjection:
+    """Pickle-safe grid-to-mesh vector projection."""
+
+    projection_matrix: jax.Array
+    grid_r: jax.Array
+
+    def __call__(self, values: jax.Array | Callable[[jax.Array], jax.Array]) -> jax.Array:
+        """Project samples or a callable profile from the grid onto the mesh basis."""
+
+        sampled = values(self.grid_r) if callable(values) else values
+        return cast(jax.Array, _FROM_GRID_ARRAY_JIT(sampled, self.projection_matrix))
+
+
+@dataclass(frozen=True)
+class _GridMatrixProjection:
+    """Pickle-safe mesh-to-grid kernel projection."""
+
+    basis_grid: jax.Array
+
+    def __call__(self, values: jax.Array) -> jax.Array:
+        """Project a mesh-space kernel onto the configured radial grid."""
+
+        return cast(jax.Array, _TO_GRID_MATRIX_JIT(values, self.basis_grid))
 
 
 def compute_B_grid(mesh: Mesh, radii: jax.Array) -> jax.Array:
@@ -32,50 +71,43 @@ def make_to_grid(
     """Return JIT-compiled grid projection helpers in both directions."""
 
     projection_matrix = _compute_from_grid_projection(mesh, basis_grid, radii)
-    grid_r = radii
-
-    def to_grid_vector(values: jax.Array) -> jax.Array:
-        """Project mesh coefficients `(N,)` onto the radial grid `(M_r,)`."""
-
-        result: jax.Array = basis_grid @ values
-        return result
-
-    projection_bound = cast(
-        GridVectorTransform,
-        jax.jit(to_grid_vector),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
-    )
-
-    def from_grid_array(values: jax.Array) -> jax.Array:
-        """Project sampled radial-grid values `(M_r,)` back to mesh coefficients `(N,)`."""
-
-        result: jax.Array = projection_matrix @ values
-        return result
-
-    def to_grid_matrix(values: jax.Array) -> jax.Array:
-        """Project a mesh-space kernel `(N, N)` onto the radial grid `(M_r, M_r)`."""
-
-        result: jax.Array = basis_grid @ values @ basis_grid.T
-        return result
-
-    from_grid_array_bound = cast(
-        FromGridVectorTransform,
-        jax.jit(from_grid_array),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
-    )
-
-    def from_grid_vector(values: jax.Array | Callable[[jax.Array], jax.Array]) -> jax.Array:
-        """Project sampled radial-grid values or a callable profile onto the mesh basis."""
-
-        sampled = values(grid_r) if callable(values) else values
-        return from_grid_array_bound(sampled)
-
     return (
-        projection_bound,
-        cast(FromGridVectorTransform, from_grid_vector),
-        cast(
-            GridMatrixTransform,
-            jax.jit(to_grid_matrix),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
-        ),
+        _GridVectorProjection(basis_grid=basis_grid),
+        _FromGridVectorProjection(projection_matrix=projection_matrix, grid_r=radii),
+        _GridMatrixProjection(basis_grid=basis_grid),
     )
+
+
+def _to_grid_vector(values: jax.Array, basis_grid: jax.Array) -> jax.Array:
+    """Project mesh coefficients `(N,)` onto the radial grid `(M_r,)`."""
+
+    result: jax.Array = basis_grid @ values
+    return result
+
+
+def _from_grid_array(values: jax.Array, projection_matrix: jax.Array) -> jax.Array:
+    """Project sampled radial-grid values `(M_r,)` back to mesh coefficients `(N,)`."""
+
+    result: jax.Array = projection_matrix @ values
+    return result
+
+
+def _to_grid_matrix(values: jax.Array, basis_grid: jax.Array) -> jax.Array:
+    """Project a mesh-space kernel `(N, N)` onto the radial grid `(M_r, M_r)`."""
+
+    result: jax.Array = basis_grid @ values @ basis_grid.T
+    return result
+
+
+_TO_GRID_VECTOR_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+    _to_grid_vector
+)
+_FROM_GRID_ARRAY_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+    _from_grid_array
+)
+_TO_GRID_MATRIX_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+    _to_grid_matrix
+)
 
 
 def _compute_from_grid_projection(mesh: Mesh, basis_grid: jax.Array, radii: jax.Array) -> jax.Array:
