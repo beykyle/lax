@@ -74,7 +74,9 @@ def test_solver_integrate_matches_polynomial_norms_for_legendre_meshes(
     coefficients = _nodal_coefficients(solver.mesh, profile)
 
     norm = float(np.asarray(solver.integrate(jnp.asarray(coefficients))))
-    radial_moment = float(np.asarray(solver.integrate(jnp.asarray(coefficients), solver.mesh.radii)))
+    radial_moment = float(
+        np.asarray(solver.integrate(jnp.asarray(coefficients), solver.mesh.radii))
+    )
 
     assert math.isclose(norm, solver.mesh.scale**5 / 5.0, rel_tol=0.0, abs_tol=5.0e-13)
     assert math.isclose(
@@ -102,7 +104,9 @@ def test_solver_integrate_matches_exponential_moments_for_laguerre_x() -> None:
     coefficients = _nodal_coefficients(solver.mesh, profile)
 
     norm = float(np.asarray(solver.integrate(jnp.asarray(coefficients))))
-    radial_moment = float(np.asarray(solver.integrate(jnp.asarray(coefficients), solver.mesh.radii)))
+    radial_moment = float(
+        np.asarray(solver.integrate(jnp.asarray(coefficients), solver.mesh.radii))
+    )
 
     assert math.isclose(norm, 2.0 * scale**3, rel_tol=0.0, abs_tol=1.0e-11)
     assert math.isclose(radial_moment, 6.0 * scale**4, rel_tol=0.0, abs_tol=1.0e-10)

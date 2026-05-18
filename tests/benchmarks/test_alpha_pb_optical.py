@@ -7,20 +7,14 @@ import pytest
 
 import lax as lm
 from lax.boundary import BoundaryValues
+from tests.benchmarks._descouvemont_cases import (
+    ALPHA_PB_REFERENCE_A14_N60_NS1,
+    ALPHA_PB_REFERENCES,
+    SingleChannelCollisionReference,
+)
 
 pytest.importorskip("jax")
 
-OPTICAL_ENERGIES = np.array([10.0, 20.0, 30.0, 40.0, 50.0], dtype=np.float64)
-APPENDIX_A_S = np.array(
-    [
-        1.0000e00 + 5.9801e-19j,
-        1.0000e00 + 7.4950e-07j,
-        9.9893e-01 + 9.0496e-03j,
-        6.5081e-01 + 2.9560e-01j,
-        6.4367e-02 + 4.1130e-02j,
-    ],
-    dtype=np.complex128,
-)
 ALPHA_PB_MASS_FACTOR = 20.736 / (4.0 * 208.0 / (4.0 + 208.0))
 
 
@@ -35,26 +29,40 @@ def _optical_potential(r: jax.Array, imag_depth: float) -> jax.Array:
     return -v0 * woods_saxon - 1.0j * imag_depth * woods_saxon + coulomb
 
 
-def _complex_solver(method: str, solvers: tuple[str, ...]):
+def _complex_solver(
+    reference: SingleChannelCollisionReference, method: str, solvers: tuple[str, ...]
+) -> lm.Solver:
     return lm.compile(
-        mesh=lm.MeshSpec("legendre", "x", n=60, scale=14.0),
+        mesh=lm.MeshSpec(
+            "legendre",
+            "x",
+            n=reference.n_basis,
+            scale=reference.scale,
+            extras={"n_intervals": reference.n_intervals},
+        ),
         channels=(lm.ChannelSpec(l=20, threshold=0.0, mass_factor=ALPHA_PB_MASS_FACTOR),),
         operators=("T+L",),
         solvers=solvers,
-        energies=OPTICAL_ENERGIES,
+        energies=reference.energies,
         V_is_complex=True,
         method=method,
         z1z2=(2, 82),
     )
 
 
-def _real_solver(method: str, solvers: tuple[str, ...]):
+def _real_solver(reference: SingleChannelCollisionReference, method: str, solvers: tuple[str, ...]):
     return lm.compile(
-        mesh=lm.MeshSpec("legendre", "x", n=60, scale=14.0),
+        mesh=lm.MeshSpec(
+            "legendre",
+            "x",
+            n=reference.n_basis,
+            scale=reference.scale,
+            extras={"n_intervals": reference.n_intervals},
+        ),
         channels=(lm.ChannelSpec(l=20, threshold=0.0, mass_factor=ALPHA_PB_MASS_FACTOR),),
         operators=("T+L",),
         solvers=solvers,
-        energies=OPTICAL_ENERGIES,
+        energies=reference.energies,
         method=method,
         z1z2=(2, 82),
     )
@@ -75,6 +83,7 @@ def _smatrix_from_direct_rmatrix(solver, potential: jax.Array) -> np.ndarray:
             H_plus_p=solver.boundary.H_plus_p[energy_index],
             H_minus_p=solver.boundary.H_minus_p[energy_index],
             is_open=solver.boundary.is_open[energy_index],
+            k=solver.boundary.k[energy_index],
         )
         smatrix = lm.spectral.smatrix_from_R(r_values[energy_index], boundary)
         smatrices.append(np.asarray(smatrix))
@@ -82,10 +91,29 @@ def _smatrix_from_direct_rmatrix(solver, potential: jax.Array) -> np.ndarray:
 
 
 @pytest.mark.benchmark
-def test_alpha_pb_optical_eig_matches_appendix_a() -> None:
-    """The complex-spectrum path reproduces Descouvemont Appendix A."""
+@pytest.mark.parametrize(
+    "reference",
+    ALPHA_PB_REFERENCES,
+    ids=["a14-n60-ns1", "a14-n15-ns5", "a16-n15-ns5"],
+)
+def test_alpha_pb_optical_matches_published_appendix_a(
+    reference: SingleChannelCollisionReference,
+) -> None:
+    """Published Descouvemont Example 1 collision-matrix values stay visible in the suite."""
 
-    solver = _complex_solver("eig", ("spectrum", "smatrix"))
+    solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
+    potential = lm.assemble_local(solver.mesh, lambda r: _optical_potential(r, imag_depth=10.0))
+    smatrix = _smatrix_from_direct_rmatrix(solver, potential)[:, 0, 0]
+
+    assert np.allclose(smatrix, reference.collision_matrix, atol=1.0e-4, rtol=1.0e-4)
+
+
+@pytest.mark.benchmark
+def test_alpha_pb_optical_eig_matches_appendix_a() -> None:
+    """The complex-spectrum path reproduces the supported Appendix A case exactly."""
+
+    reference = ALPHA_PB_REFERENCE_A14_N60_NS1
+    solver = _complex_solver(reference, "eig", ("spectrum", "smatrix"))
     potential = lm.assemble_local(solver.mesh, lambda r: _optical_potential(r, imag_depth=10.0))
 
     assert solver.spectrum is not None
@@ -93,28 +121,30 @@ def test_alpha_pb_optical_eig_matches_appendix_a() -> None:
 
     smatrix = np.asarray(solver.smatrix(solver.spectrum(potential)))[:, 0, 0]
 
-    assert np.allclose(smatrix, APPENDIX_A_S, atol=1.0e-4, rtol=1.0e-4)
+    assert np.allclose(smatrix, reference.collision_matrix, atol=1.0e-4, rtol=1.0e-4)
 
 
 @pytest.mark.benchmark
 def test_alpha_pb_optical_direct_matches_appendix_a() -> None:
-    """The direct linear-solve path reproduces Descouvemont Appendix A."""
+    """The direct linear-solve path reproduces the supported Appendix A case."""
 
-    solver = _complex_solver("linear_solve", ("rmatrix_direct",))
+    reference = ALPHA_PB_REFERENCE_A14_N60_NS1
+    solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
     potential = lm.assemble_local(solver.mesh, lambda r: _optical_potential(r, imag_depth=10.0))
     smatrix = _smatrix_from_direct_rmatrix(solver, potential)[:, 0, 0]
 
-    assert np.allclose(smatrix, APPENDIX_A_S, atol=1.0e-4, rtol=1.0e-4)
+    assert np.allclose(smatrix, reference.collision_matrix, atol=1.0e-4, rtol=1.0e-4)
 
 
 @pytest.mark.benchmark
 def test_alpha_pb_optical_method_paths_agree() -> None:
     """The `eigh`, `eig`, and `linear_solve` paths stay consistent where they overlap."""
 
-    real_spectrum_solver = _real_solver("eigh", ("spectrum", "smatrix"))
-    real_direct_solver = _real_solver("linear_solve", ("rmatrix_direct",))
-    complex_solver = _complex_solver("eig", ("spectrum", "smatrix"))
-    complex_direct_solver = _complex_solver("linear_solve", ("rmatrix_direct",))
+    reference = ALPHA_PB_REFERENCE_A14_N60_NS1
+    real_spectrum_solver = _real_solver(reference, "eigh", ("spectrum", "smatrix"))
+    real_direct_solver = _real_solver(reference, "linear_solve", ("rmatrix_direct",))
+    complex_solver = _complex_solver(reference, "eig", ("spectrum", "smatrix"))
+    complex_direct_solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
     real_potential = lm.assemble_local(
         real_spectrum_solver.mesh,
         lambda r: jnp.real(_optical_potential(r, imag_depth=0.0)),

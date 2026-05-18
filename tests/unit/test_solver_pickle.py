@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pickle
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -17,8 +18,16 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
     solver = lm.compile(
         mesh=lm.MeshSpec("legendre", "x", n=4, scale=7.0),
         channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
-        solvers=("spectrum", "rmatrix", "smatrix", "phases", "greens", "wavefunction", "rmatrix_direct"),
-        energies=jnp.asarray([0.5]),
+        solvers=(
+            "spectrum",
+            "rmatrix",
+            "smatrix",
+            "phases",
+            "greens",
+            "wavefunction",
+            "rmatrix_direct",
+        ),
+        energies=jnp.asarray([0.25, 0.5]),
         grid=jnp.linspace(0.5, 6.5, 7),
         momenta=jnp.linspace(0.1, 1.0, 6),
     )
@@ -26,6 +35,7 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
     restored = pickle.loads(pickle.dumps(solver))
     potential = jnp.asarray([[[0.2, 0.1, 0.0, -0.1]]])
     source = jnp.asarray([1.0, 0.0, 0.0, 0.0])
+    potentials_grid = jnp.stack((potential, potential + 0.05), axis=0)
     vector = jnp.asarray([0.3, -0.2, 0.1, 0.4])
     matrix = jnp.asarray(
         [
@@ -44,7 +54,16 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
         "phases",
         "greens",
         "wavefunction",
+        "rmatrix_grid",
+        "smatrix_grid",
+        "phases_grid",
         "rmatrix_direct",
+        "rmatrix_direct_grid",
+        "smatrix_direct_grid",
+        "phases_direct_grid",
+        "interpolate_rmatrix",
+        "interpolate_smatrix",
+        "interpolate_phases",
         "to_grid_vector",
         "from_grid_vector",
         "to_grid_matrix",
@@ -60,7 +79,16 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
     assert solver.phases is not None
     assert solver.greens is not None
     assert solver.wavefunction is not None
+    assert solver.rmatrix_grid is not None
+    assert solver.smatrix_grid is not None
+    assert solver.phases_grid is not None
     assert solver.rmatrix_direct is not None
+    assert solver.rmatrix_direct_grid is not None
+    assert solver.smatrix_direct_grid is not None
+    assert solver.phases_direct_grid is not None
+    assert solver.interpolate_rmatrix is not None
+    assert solver.interpolate_smatrix is not None
+    assert solver.interpolate_phases is not None
     assert solver.to_grid_vector is not None
     assert solver.from_grid_vector is not None
     assert solver.to_grid_matrix is not None
@@ -70,6 +98,8 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
 
     fresh_spectrum = solver.spectrum(potential)
     restored_spectrum = restored.spectrum(potential)
+    fresh_spectra_grid = jax.vmap(solver.spectrum)(potentials_grid)
+    restored_spectra_grid = jax.vmap(restored.spectrum)(potentials_grid)
 
     assert np.allclose(np.asarray(restored.mesh.nodes), np.asarray(solver.mesh.nodes))
     assert np.allclose(np.asarray(restored.mesh.weights), np.asarray(solver.mesh.weights))
@@ -108,8 +138,44 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
         np.asarray(solver.wavefunction(fresh_spectrum, 0.5, source)),
     )
     assert np.allclose(
+        np.asarray(restored.rmatrix_grid(restored_spectra_grid)),
+        np.asarray(solver.rmatrix_grid(fresh_spectra_grid)),
+    )
+    assert np.allclose(
+        np.asarray(restored.smatrix_grid(restored_spectra_grid)),
+        np.asarray(solver.smatrix_grid(fresh_spectra_grid)),
+    )
+    assert np.allclose(
+        np.asarray(restored.phases_grid(restored_spectra_grid)),
+        np.asarray(solver.phases_grid(fresh_spectra_grid)),
+    )
+    assert np.allclose(
         np.asarray(restored.rmatrix_direct(potential)),
         np.asarray(solver.rmatrix_direct(potential)),
+    )
+    assert np.allclose(
+        np.asarray(restored.rmatrix_direct_grid(potentials_grid)),
+        np.asarray(solver.rmatrix_direct_grid(potentials_grid)),
+    )
+    assert np.allclose(
+        np.asarray(restored.smatrix_direct_grid(potentials_grid)),
+        np.asarray(solver.smatrix_direct_grid(potentials_grid)),
+    )
+    assert np.allclose(
+        np.asarray(restored.phases_direct_grid(potentials_grid)),
+        np.asarray(solver.phases_direct_grid(potentials_grid)),
+    )
+    restored_smatrix_grid = restored.smatrix_grid(restored_spectra_grid)
+    fresh_smatrix_grid = solver.smatrix_grid(fresh_spectra_grid)
+    restored_phase_grid = restored.phases_grid(restored_spectra_grid)
+    fresh_phase_grid = solver.phases_grid(fresh_spectra_grid)
+    assert np.allclose(
+        np.asarray(restored.interpolate_smatrix(restored_smatrix_grid)(0.4)),
+        np.asarray(solver.interpolate_smatrix(fresh_smatrix_grid)(0.4)),
+    )
+    assert np.allclose(
+        np.asarray(restored.interpolate_phases(restored_phase_grid)(0.4)),
+        np.asarray(solver.interpolate_phases(fresh_phase_grid)(0.4)),
     )
     assert np.allclose(
         np.asarray(restored.to_grid_vector(vector)),

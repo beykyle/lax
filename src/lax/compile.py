@@ -11,7 +11,15 @@ import numpy as np
 from lax.boundary import compute_boundary_values
 from lax.boundary._types import Solver, TransformMatrices
 from lax.meshes import build_mesh
-from lax.solvers import bind_observables, make_rmatrix_direct_kernel, make_spectrum_kernel
+from lax.solvers import (
+    bind_direct_grid_observables,
+    bind_grid_observables,
+    bind_interpolators,
+    bind_observables,
+    make_rmatrix_direct_grid_observable,
+    make_rmatrix_direct_kernel,
+    make_spectrum_kernel,
+)
 from lax.transforms import (
     compute_B_grid,
     compute_F_momentum,
@@ -71,6 +79,12 @@ def compile(
         operators=operators_set,
         **mesh.extras,
     )
+    if mesh_data.n_intervals > 1 and needs_spectrum:
+        msg = "Subinterval propagation is currently implemented only for the direct linear-solve path."
+        raise NotImplementedError(msg)
+    if mesh_data.n_intervals > 1 and (grid is not None or momenta is not None):
+        msg = "Grid and momentum transforms are not implemented for propagated subinterval meshes."
+        raise NotImplementedError(msg)
 
     if energies is not None:
         energies_np = np.asarray(energies)
@@ -141,7 +155,16 @@ def compile(
     greens_fn = None
     wavefunction_fn = None
     eigh_fn = None
+    rmatrix_grid_fn = None
+    smatrix_grid_fn = None
+    phases_grid_fn = None
     rmatrix_direct_fn = None
+    rmatrix_direct_grid_fn = None
+    smatrix_direct_grid_fn = None
+    phases_direct_grid_fn = None
+    interpolate_rmatrix_fn = None
+    interpolate_smatrix_fn = None
+    interpolate_phases_fn = None
     if spectrum_fn is not None:
         (
             bound_rmatrix,
@@ -162,6 +185,17 @@ def compile(
         greens_fn = bound_greens if "greens" in solvers_set else None
         wavefunction_fn = bound_wavefunction if "wavefunction" in solvers_set else None
         eigh_fn = bound_eigh if keep_eigenvectors else bound_eigh
+        if energies is not None:
+            (
+                rmatrix_grid_fn,
+                smatrix_grid_fn,
+                phases_grid_fn,
+            ) = bind_grid_observables(
+                mesh_data,
+                channels_tuple,
+                energies_array,
+                boundary,
+            )
 
     if "rmatrix_direct" in solvers_set:
         rmatrix_direct_fn = make_rmatrix_direct_kernel(
@@ -169,7 +203,27 @@ def compile(
             operator_matrices,
             channels_tuple,
             energies_array,
+            boundary,
         )
+        if energies is not None:
+            rmatrix_direct_grid_fn = make_rmatrix_direct_grid_observable(
+                mesh_data,
+                operator_matrices,
+                channels_tuple,
+                energies_array,
+                boundary,
+            )
+            (
+                smatrix_direct_grid_fn,
+                phases_direct_grid_fn,
+            ) = bind_direct_grid_observables(rmatrix_direct_grid_fn, boundary)
+
+    if energies is not None:
+        (
+            interpolate_rmatrix_fn,
+            interpolate_smatrix_fn,
+            interpolate_phases_fn,
+        ) = bind_interpolators(energies_array)
 
     return Solver(
         mesh=mesh_data,
@@ -188,7 +242,16 @@ def compile(
         greens=greens_fn,
         wavefunction=wavefunction_fn,
         eigh=eigh_fn,
+        rmatrix_grid=rmatrix_grid_fn,
+        smatrix_grid=smatrix_grid_fn,
+        phases_grid=phases_grid_fn,
         rmatrix_direct=rmatrix_direct_fn,
+        rmatrix_direct_grid=rmatrix_direct_grid_fn,
+        smatrix_direct_grid=smatrix_direct_grid_fn,
+        phases_direct_grid=phases_direct_grid_fn,
+        interpolate_rmatrix=interpolate_rmatrix_fn,
+        interpolate_smatrix=interpolate_smatrix_fn,
+        interpolate_phases=interpolate_phases_fn,
         to_grid_vector=to_grid_vector_fn,
         from_grid_vector=from_grid_vector_fn,
         to_grid_matrix=to_grid_matrix_fn,

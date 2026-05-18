@@ -141,9 +141,8 @@ def legendre_x_one_minus_x_basis_at(mesh: Mesh, radii: np.ndarray) -> np.ndarray
         * (1.0 - dimensionless_radii[:, None])
         * legendre_values[:, None]
     )
-    denominator = (
-        np.sqrt(channel_radius * nodes * (1.0 - nodes))[None, :]
-        * (dimensionless_radii[:, None] - nodes[None, :])
+    denominator = np.sqrt(channel_radius * nodes * (1.0 - nodes))[None, :] * (
+        dimensionless_radii[:, None] - nodes[None, :]
     )
 
     close_mask = np.isclose(dimensionless_radii[:, None], nodes[None, :])
@@ -206,11 +205,7 @@ def laguerre_modified_x2_basis_at(mesh: Mesh, radii: np.ndarray) -> np.ndarray:
 
     normalization = np.exp(
         -0.5
-        * (
-            sc.gammaln(basis_size + alpha + 1.0)
-            - sc.gammaln(float(basis_size) + 1.0)
-            - np.log(2.0)
-        )
+        * (sc.gammaln(basis_size + alpha + 1.0) - sc.gammaln(float(basis_size) + 1.0) - np.log(2.0))
     )
     signs = np.where(np.arange(basis_size) % 2 == 0, 1.0, -1.0)
     numerator = (

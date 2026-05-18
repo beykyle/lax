@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from lax.boundary._types import Mesh, OperatorMatrices
+from lax.propagate import build_legendre_x_propagation
 
 from ._registry import register
 
@@ -21,8 +22,18 @@ def build_legendre_x(
 ) -> tuple[Mesh, OperatorMatrices]:
     """Build shifted Legendre-x mesh data. [Desc. eqs. 22-24]"""
 
-    del extras
+    n_intervals = int(extras.pop("n_intervals", 1))
+    if extras:
+        msg = f"Unsupported Legendre-x extras: {sorted(extras)}"
+        raise ValueError(msg)
     a = float(scale)
+    if n_intervals < 1:
+        msg = "Legendre-x propagation requires n_intervals >= 1."
+        raise ValueError(msg)
+    if n_intervals > 1:
+        return _build_legendre_x_propagated(
+            n=n, scale=a, n_intervals=n_intervals, operators=operators
+        )
 
     x_raw: np.ndarray
     w_raw: np.ndarray
@@ -48,10 +59,13 @@ def build_legendre_x(
         regularization="x",
         n=n,
         scale=a,
+        n_intervals=1,
+        basis_size_per_interval=n,
         nodes=nodes_array,
         weights=weights_array,
         radii=radii_array,
         basis_at_boundary=boundary_array,
+        propagation=None,
     )
 
     operators_out = OperatorMatrices(
@@ -60,6 +74,59 @@ def build_legendre_x(
         inv_r=_diagonal_operator(1.0 / radii) if {"1/r", "inv_r"} & operators else None,
         inv_r2=(
             _diagonal_operator(1.0 / (radii**2))
+            if {"1/r^2", "1/r²", "inv_r2"} & operators
+            else None
+        ),
+    )
+    return mesh, operators_out
+
+
+def _build_legendre_x_propagated(
+    *,
+    n: int,
+    scale: float,
+    n_intervals: int,
+    operators: set[str],
+) -> tuple[Mesh, OperatorMatrices]:
+    """Build the compile-time data needed for propagated shifted Legendre-x solves."""
+
+    propagation = build_legendre_x_propagation(
+        basis_size_per_interval=n,
+        n_intervals=n_intervals,
+        scale=scale,
+    )
+    interval_width = scale / n_intervals
+    radii_segments = [
+        ((interval_index + propagation.local_nodes) * interval_width)
+        for interval_index in range(n_intervals)
+    ]
+    radii = jnp.concatenate(radii_segments)
+    nodes = radii / scale
+    weights = jnp.tile(propagation.local_weights, n_intervals)
+    boundary = jnp.concatenate(
+        [
+            jnp.zeros(n * (n_intervals - 1), dtype=propagation.q2.dtype),
+            propagation.q2[-1],
+        ]
+    )
+    total_basis_size = n * n_intervals
+    mesh = Mesh(
+        family="legendre",
+        regularization="x",
+        n=total_basis_size,
+        scale=scale,
+        n_intervals=n_intervals,
+        basis_size_per_interval=n,
+        nodes=nodes,
+        weights=weights,
+        radii=radii,
+        basis_at_boundary=boundary,
+        propagation=propagation,
+    )
+    operators_out = OperatorMatrices(
+        inv_r=_diagonal_operator(1.0 / np.asarray(radii)) if {"1/r", "inv_r"} & operators else None,
+        inv_r2=(
+            _diagonal_operator(1.0 / (np.asarray(radii) ** 2))
             if {"1/r^2", "1/r²", "inv_r2"} & operators
             else None
         ),
@@ -87,10 +154,13 @@ def build_legendre_x_one_minus_x(
         regularization="x(1-x)",
         n=n,
         scale=a,
+        n_intervals=1,
+        basis_size_per_interval=n,
         nodes=_to_jax_array(nodes),
         weights=_to_jax_array(weights),
         radii=_to_jax_array(radii),
         basis_at_boundary=_to_jax_array(np.zeros(n, dtype=np.float64)),
+        propagation=None,
     )
 
     include_kinetic = bool({"T", "T+L", "TpL"} & operators)
@@ -128,10 +198,13 @@ def build_legendre_x_three_halves(
         regularization="x^3/2",
         n=n,
         scale=a,
+        n_intervals=1,
+        basis_size_per_interval=n,
         nodes=_to_jax_array(nodes),
         weights=_to_jax_array(weights),
         radii=_to_jax_array(radii),
         basis_at_boundary=_to_jax_array(basis_at_boundary),
+        propagation=None,
     )
 
     include_kinetic = bool({"T+L", "TpL"} & operators)
@@ -232,12 +305,7 @@ def _legendre_x_one_minus_x_kinetic(nodes: np.ndarray, scale: float) -> np.ndarr
     col_idx: np.ndarray
     row_idx, col_idx = np.triu_indices(n, k=1)
     sign = np.where((row_idx - col_idx) % 2 == 0, 1.0, -1.0)
-    rij = np.sqrt(
-        nodes[row_idx]
-        * (1.0 - nodes[row_idx])
-        * nodes[col_idx]
-        * (1.0 - nodes[col_idx])
-    )
+    rij = np.sqrt(nodes[row_idx] * (1.0 - nodes[row_idx]) * nodes[col_idx] * (1.0 - nodes[col_idx]))
     off_diagonal = (
         sign
         * (nodes[row_idx] + nodes[col_idx] - 2.0 * nodes[row_idx] * nodes[col_idx])
@@ -249,10 +317,7 @@ def _legendre_x_one_minus_x_kinetic(nodes: np.ndarray, scale: float) -> np.ndarr
     all_row, all_col = np.indices((n, n))
     correction_sign = np.where((all_row - all_col) % 2 == 0, 1.0, -1.0)
     rij_full = np.sqrt(
-        nodes[all_row]
-        * (1.0 - nodes[all_row])
-        * nodes[all_col]
-        * (1.0 - nodes[all_col])
+        nodes[all_row] * (1.0 - nodes[all_row]) * nodes[all_col] * (1.0 - nodes[all_col])
     )
     correction = correction_sign * n * (n + 1.0) / (scale**2 * (2.0 * n + 1.0) * rij_full)
     return matrix - correction
@@ -265,10 +330,7 @@ def _legendre_x_three_halves_t_plus_l(nodes: np.ndarray, scale: float) -> np.nda
     matrix = np.zeros((n, n), dtype=np.float64)
 
     diagonal_numerator = (
-        4.0 * n * (n + 1.0) * (3.0 + nodes) * (1.0 - nodes)
-        + 3.0 * nodes**2
-        - 30.0 * nodes
-        + 7.0
+        4.0 * n * (n + 1.0) * (3.0 + nodes) * (1.0 - nodes) + 3.0 * nodes**2 - 30.0 * nodes + 7.0
     )
     diagonal = diagonal_numerator / (12.0 * scale**2 * nodes**2 * (1.0 - nodes) ** 2)
     np.fill_diagonal(matrix, diagonal)
@@ -278,10 +340,7 @@ def _legendre_x_three_halves_t_plus_l(nodes: np.ndarray, scale: float) -> np.nda
     row_idx, col_idx = np.triu_indices(n, k=1)
     sign = np.where((row_idx + col_idx) % 2 == 0, 1.0, -1.0)
     denominator = np.sqrt(
-        nodes[row_idx]
-        * nodes[col_idx]
-        * (1.0 - nodes[row_idx])
-        * (1.0 - nodes[col_idx])
+        nodes[row_idx] * nodes[col_idx] * (1.0 - nodes[row_idx]) * (1.0 - nodes[col_idx])
     )
     numerator = (
         n * (n + 1.0)

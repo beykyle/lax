@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Final
 
 import jax
@@ -11,6 +12,26 @@ from lax._angular import wigner_3j, wigner_6j
 from lax.types import ChannelSpec
 
 type ChannelInfo = tuple[int, int, float]
+
+
+@dataclass(frozen=True)
+class CoupledOpticalModel:
+    """Parameters for Descouvemont-style rotor-coupled optical benchmarks."""
+
+    mass_factor: float
+    radius: float
+    rv: float
+    rc: float
+    diffuseness: float
+    v0: float
+    w0: float
+    beta: float
+    lambda_multipole: int
+    total_angular_momentum: int
+    z1: int
+    z2: int
+    channels_info: tuple[ChannelInfo, ...]
+
 
 NN_MASS_FACTOR: Final[float] = 41.472
 
@@ -38,6 +59,54 @@ ALPHA_C12_CHANNELS_INFO: Final[tuple[ChannelInfo, ...]] = (
     (3, 4, ALPHA_C12_THRESHOLD_4),
     (5, 4, ALPHA_C12_THRESHOLD_4),
     (7, 4, ALPHA_C12_THRESHOLD_4),
+)
+ALPHA_C12_MODEL: Final[CoupledOpticalModel] = CoupledOpticalModel(
+    mass_factor=ALPHA_C12_MASS_FACTOR,
+    radius=ALPHA_C12_RADIUS,
+    rv=ALPHA_C12_RV,
+    rc=ALPHA_C12_RC,
+    diffuseness=ALPHA_C12_DIFFUSENESS,
+    v0=ALPHA_C12_V0,
+    w0=ALPHA_C12_W0,
+    beta=ALPHA_C12_BETA2,
+    lambda_multipole=ALPHA_C12_LAMBDA,
+    total_angular_momentum=ALPHA_C12_TOTAL_ANGULAR_MOMENTUM,
+    z1=2,
+    z2=6,
+    channels_info=ALPHA_C12_CHANNELS_INFO,
+)
+
+O16_CA44_MASS_FACTOR: Final[float] = 20.736 / (16.0 * 44.0 / (16.0 + 44.0))
+O16_CA44_THRESHOLD_2: Final[float] = 1.156
+O16_CA44_V0: Final[float] = 110.0
+O16_CA44_W0: Final[float] = 20.0
+O16_CA44_RADIUS: Final[float] = 1.2 * (16.0 ** (1.0 / 3.0) + 44.0 ** (1.0 / 3.0))
+O16_CA44_DIFFUSENESS: Final[float] = 0.5
+O16_CA44_RC: Final[float] = O16_CA44_RADIUS
+O16_CA44_RV: Final[float] = 1.2 * 44.0 ** (1.0 / 3.0)
+O16_CA44_BETA2: Final[float] = 0.4
+O16_CA44_TOTAL_ANGULAR_MOMENTUM: Final[int] = 30
+O16_CA44_LAMBDA: Final[int] = 2
+O16_CA44_CHANNELS_INFO: Final[tuple[ChannelInfo, ...]] = (
+    (30, 0, 0.0),
+    (28, 2, O16_CA44_THRESHOLD_2),
+    (30, 2, O16_CA44_THRESHOLD_2),
+    (32, 2, O16_CA44_THRESHOLD_2),
+)
+O16_CA44_MODEL: Final[CoupledOpticalModel] = CoupledOpticalModel(
+    mass_factor=O16_CA44_MASS_FACTOR,
+    radius=O16_CA44_RADIUS,
+    rv=O16_CA44_RV,
+    rc=O16_CA44_RC,
+    diffuseness=O16_CA44_DIFFUSENESS,
+    v0=O16_CA44_V0,
+    w0=O16_CA44_W0,
+    beta=O16_CA44_BETA2,
+    lambda_multipole=O16_CA44_LAMBDA,
+    total_angular_momentum=O16_CA44_TOTAL_ANGULAR_MOMENTUM,
+    z1=8,
+    z2=20,
+    channels_info=O16_CA44_CHANNELS_INFO,
 )
 
 
@@ -83,37 +152,37 @@ def reid_np_j1_potential(radii: jax.Array, channel_index: int, coupled_index: in
 def alpha_c12_channels() -> tuple[ChannelSpec, ...]:
     """Return the Descouvemont Example 4 α + 12C channels."""
 
-    return tuple(
-        ChannelSpec(l=angular_momentum, threshold=threshold, mass_factor=ALPHA_C12_MASS_FACTOR)
-        for angular_momentum, _, threshold in ALPHA_C12_CHANNELS_INFO
-    )
+    return _coupled_optical_channels(ALPHA_C12_MODEL)
 
 
 def alpha_c12_open_channel_count(energy: float) -> int:
     """Return the number of open α + 12C channels at one c.m. energy."""
 
-    return sum(1 for _, _, threshold in ALPHA_C12_CHANNELS_INFO if energy >= threshold)
+    return _open_channel_count(ALPHA_C12_MODEL, energy)
 
 
 def alpha_c12_potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:
     """Return the Descouvemont Example 4 coupled α + 12C optical potential in MeV."""
 
-    nuclear_shape = _woods_saxon(radii, ALPHA_C12_RADIUS, ALPHA_C12_DIFFUSENESS)
-    derivative = _woods_saxon_derivative(radii, ALPHA_C12_RADIUS, ALPHA_C12_DIFFUSENESS)
-    complex_depth = ALPHA_C12_V0 + 1.0j * ALPHA_C12_W0
-    nuclear = -complex_depth * nuclear_shape
+    return _coupled_optical_potential(ALPHA_C12_MODEL, radii, channel_index, coupled_index)
 
-    result: jax.Array = jnp.zeros_like(  # pyright: ignore[reportUnknownMemberType] -- JAX zeros_like stubs are imprecise.
-        nuclear,
-        dtype=jnp.complex128,
-    )
-    if channel_index == coupled_index:
-        result = result + nuclear + _uniform_sphere_coulomb(radii, ALPHA_C12_RC, z1=2, z2=6)
 
-    coupling = _alpha_c12_coupling_coefficient(channel_index, coupled_index)
-    if coupling != 0.0:
-        result = result - coupling * ALPHA_C12_BETA2 * ALPHA_C12_RV * derivative * complex_depth
-    return result
+def o16_ca44_channels() -> tuple[ChannelSpec, ...]:
+    """Return the Descouvemont Example 3 16O + 44Ca channels."""
+
+    return _coupled_optical_channels(O16_CA44_MODEL)
+
+
+def o16_ca44_open_channel_count(energy: float) -> int:
+    """Return the number of open 16O + 44Ca channels at one c.m. energy."""
+
+    return _open_channel_count(O16_CA44_MODEL, energy)
+
+
+def o16_ca44_potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:
+    """Return the Descouvemont Example 3 coupled 16O + 44Ca optical potential in MeV."""
+
+    return _coupled_optical_potential(O16_CA44_MODEL, radii, channel_index, coupled_index)
 
 
 def first_column_amplitudes_and_phases(
@@ -123,6 +192,49 @@ def first_column_amplitudes_and_phases(
 
     column = smatrix[:open_count, 0]
     return np.abs(column), 0.5 * np.angle(column)
+
+
+def _coupled_optical_channels(model: CoupledOpticalModel) -> tuple[ChannelSpec, ...]:
+    """Return the coupled-channel tuple for one optical benchmark model."""
+
+    return tuple(
+        ChannelSpec(l=angular_momentum, threshold=threshold, mass_factor=model.mass_factor)
+        for angular_momentum, _, threshold in model.channels_info
+    )
+
+
+def _open_channel_count(model: CoupledOpticalModel, energy: float) -> int:
+    """Return the number of open channels for one optical benchmark model."""
+
+    return sum(1 for _, _, threshold in model.channels_info if energy >= threshold)
+
+
+def _coupled_optical_potential(
+    model: CoupledOpticalModel,
+    radii: jax.Array,
+    channel_index: int,
+    coupled_index: int,
+) -> jax.Array:
+    """Return a Descouvemont-style rotor-coupled optical potential in MeV."""
+
+    nuclear_shape = _woods_saxon(radii, model.radius, model.diffuseness)
+    derivative = _woods_saxon_derivative(radii, model.radius, model.diffuseness)
+    complex_depth = model.v0 + 1.0j * model.w0
+    nuclear = -complex_depth * nuclear_shape
+
+    result: jax.Array = jnp.zeros_like(  # pyright: ignore[reportUnknownMemberType] -- JAX zeros_like stubs are imprecise.
+        nuclear,
+        dtype=jnp.complex128,
+    )
+    if channel_index == coupled_index:
+        result = (
+            result + nuclear + _uniform_sphere_coulomb(radii, model.rc, z1=model.z1, z2=model.z2)
+        )
+
+    coupling = _coupled_optical_coefficient(model, channel_index, coupled_index)
+    if coupling != 0.0:
+        result = result - coupling * model.beta * model.rv * derivative * complex_depth
+    return result
 
 
 def _woods_saxon(radii: jax.Array, radius: float, diffuseness: float) -> jax.Array:
@@ -148,20 +260,24 @@ def _uniform_sphere_coulomb(radii: jax.Array, radius: float, z1: int, z2: int) -
     return jnp.where(radii <= radius, inside, outside)  # pyright: ignore[reportUnknownMemberType] -- JAX where stubs are imprecise.
 
 
-def _alpha_c12_coupling_coefficient(channel_index: int, coupled_index: int) -> float:
-    """Return the `example4.f` angular coefficient xfac for the α + 12C λ=2 coupling."""
+def _coupled_optical_coefficient(
+    model: CoupledOpticalModel, channel_index: int, coupled_index: int
+) -> float:
+    """Return the Descouvemont angular coefficient xfac for one coupled optical model."""
 
-    angular_momentum, spin, _ = ALPHA_C12_CHANNELS_INFO[channel_index]
-    coupled_angular_momentum, coupled_spin, _ = ALPHA_C12_CHANNELS_INFO[coupled_index]
-    wigner_i = wigner_3j(coupled_spin, ALPHA_C12_LAMBDA, spin, 0, 0, 0)
-    wigner_l = wigner_3j(angular_momentum, ALPHA_C12_LAMBDA, coupled_angular_momentum, 0, 0, 0)
+    angular_momentum, spin, _ = model.channels_info[channel_index]
+    coupled_angular_momentum, coupled_spin, _ = model.channels_info[coupled_index]
+    wigner_i = wigner_3j(coupled_spin, model.lambda_multipole, spin, 0, 0, 0)
+    wigner_l = wigner_3j(
+        angular_momentum, model.lambda_multipole, coupled_angular_momentum, 0, 0, 0
+    )
     six_j = wigner_6j(
         spin,
         angular_momentum,
-        ALPHA_C12_TOTAL_ANGULAR_MOMENTUM,
+        model.total_angular_momentum,
         coupled_angular_momentum,
         coupled_spin,
-        ALPHA_C12_LAMBDA,
+        model.lambda_multipole,
     )
     if wigner_i == 0.0 or wigner_l == 0.0 or six_j == 0.0:
         return 0.0
@@ -171,13 +287,13 @@ def _alpha_c12_coupling_coefficient(channel_index: int, coupled_index: int) -> f
         * (2 * coupled_angular_momentum + 1)
         * (2 * spin + 1)
         * (2 * coupled_spin + 1)
-        * (2 * ALPHA_C12_LAMBDA + 1)
+        * (2 * model.lambda_multipole + 1)
         / (4.0 * math.pi)
     )
     coefficient = wigner_i * wigner_l * six_j * factor
     if (abs(angular_momentum - coupled_angular_momentum) // 2) % 2 == 1:
         coefficient = -coefficient
-    if (ALPHA_C12_TOTAL_ANGULAR_MOMENTUM + ALPHA_C12_LAMBDA) % 2 == 1:
+    if (model.total_angular_momentum + model.lambda_multipole) % 2 == 1:
         coefficient = -coefficient
     return coefficient
 
@@ -188,6 +304,9 @@ __all__: Final[list[str]] = [
     "alpha_c12_potential",
     "first_column_amplitudes_and_phases",
     "np_j1_channels",
+    "o16_ca44_channels",
+    "o16_ca44_open_channel_count",
+    "o16_ca44_potential",
     "reid_np_j1_potential",
     "reid_soft_core_triplet_components",
 ]

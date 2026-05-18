@@ -212,9 +212,12 @@ def test_coupled_channel_rmatrix_matches_direct_solver() -> None:
             H_plus_p=jnp.asarray([[0.2 + 0.1j, 0.3 + 0.15j]]),
             H_minus_p=jnp.asarray([[0.2 - 0.1j, 0.3 - 0.15j]]),
             is_open=jnp.asarray([[True, True]]),
+            k=jnp.asarray([[1.0, 1.0]]),
         ),
     )
-    direct = make_rmatrix_direct_kernel(mesh, operators, channels, jnp.asarray([0.25]))(potential)
+    direct = make_rmatrix_direct_kernel(mesh, operators, channels, jnp.asarray([0.25]), None)(
+        potential
+    )
 
     assert smatrix is not None
     assert phases is not None
@@ -250,6 +253,7 @@ def test_closed_channel_decoupling_matches_direct_bloch_updated_rmatrix() -> Non
         H_plus_p=jnp.asarray([[0.2 + 0.1j, 0.6 + 0.0j]]),
         H_minus_p=jnp.asarray([[0.2 - 0.1j, 0.6 + 0.0j]]),
         is_open=jnp.asarray([[True, False]]),
+        k=jnp.asarray([[np.sqrt(energy / channels[0].mass_factor), 1.0]]),
     )
     spectrum_kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
     spectrum = spectrum_kernel(potential)
@@ -301,6 +305,7 @@ def test_closed_channel_decoupling_matches_direct_bloch_updated_rmatrix() -> Non
         boundary.H_plus_p[0],
         boundary.H_minus_p[0],
         boundary.is_open[0],
+        boundary.k[0],
     )
     direct_smatrix = np.asarray(smatrix_from_R(projected_rmatrix, projected_boundary))
     bound_smatrix = np.asarray(smatrix(spectrum))

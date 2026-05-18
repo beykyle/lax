@@ -41,10 +41,13 @@ def build_laguerre_x(
         regularization="x",
         n=n,
         scale=h,
+        n_intervals=1,
+        basis_size_per_interval=n,
         nodes=_to_jax_array(nodes),
         weights=_to_jax_array(weights),
         radii=_to_jax_array(radii),
         basis_at_boundary=_to_jax_array(np.zeros(n, dtype=np.float64)),
+        propagation=None,
     )
 
     include_kinetic = bool({"T", "T+L", "TpL"} & operators)
@@ -89,10 +92,13 @@ def build_laguerre_modified_x2(
         regularization="modified_x^2",
         n=n,
         scale=h,
+        n_intervals=1,
+        basis_size_per_interval=n,
         nodes=_to_jax_array(nodes),
         weights=_to_jax_array(weights),
         radii=_to_jax_array(radii),
         basis_at_boundary=_to_jax_array(np.zeros(n, dtype=np.float64)),
+        propagation=None,
     )
 
     include_kinetic = bool({"T", "T+L", "TpL"} & operators)
@@ -138,15 +144,13 @@ def _modified_laguerre_x2_weights(
 ) -> np.ndarray:
     """Return the modified-Laguerre-x^2 quadrature weights. [Baye eq. 3.84]"""
 
-    polynomial_values = np.asarray(sc.eval_genlaguerre(n - 1, alpha, squared_nodes), dtype=np.float64)
+    polynomial_values = np.asarray(
+        sc.eval_genlaguerre(n - 1, alpha, squared_nodes), dtype=np.float64
+    )
     factorial_n = float(math.factorial(n))
     numerator = np.exp(squared_nodes) * np.exp(sc.gammaln(n + alpha + 1.0))
     denominator: np.ndarray = (
-        2.0 ** (alpha - 1.0)
-        * factorial_n
-        * (n + alpha)
-        * nodes**alpha
-        * polynomial_values**2
+        2.0 ** (alpha - 1.0) * factorial_n * (n + alpha) * nodes**alpha * polynomial_values**2
     )
     return numerator / denominator
 
@@ -163,9 +167,7 @@ def _modified_laguerre_x2_kinetic(
     matrix = np.zeros((basis_size, basis_size), dtype=np.float64)
 
     diagonal = (
-        -nodes**2
-        + 2.0 * (2.0 * n + alpha + 1.0)
-        + (2.0 * alpha**2 - 2.0) / (nodes**2)
+        -(nodes**2) + 2.0 * (2.0 * n + alpha + 1.0) + (2.0 * alpha**2 - 2.0) / (nodes**2)
     ) / (3.0 * scale**2)
     np.fill_diagonal(matrix, diagonal)
 

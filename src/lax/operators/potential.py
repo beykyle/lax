@@ -39,6 +39,10 @@ def assemble_nonlocal(
 ) -> jax.Array:
     """Assemble a Gauss-scaled non-local potential on the mesh."""
 
+    if mesh.n_intervals != 1:
+        msg = "Non-local potentials are not implemented for propagated subinterval meshes."
+        raise NotImplementedError(msg)
+
     radii = mesh.radii
     weights = mesh.weights
     radius_i, radius_j = jnp.meshgrid(radii, radii, indexing="ij")  # pyright: ignore[reportUnknownMemberType] -- JAX stubs for meshgrid are imprecise.

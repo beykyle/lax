@@ -13,16 +13,26 @@ from lax._descouvemont_utils import (
 )
 from lax.boundary import BoundaryValues
 from lax.solvers.observables import _decouple_closed_channels, _project_open_channels
-from tests.benchmarks._descouvemont_cases import ALPHA_C12_REFERENCE_A11, AlphaC12Reference
+from tests.benchmarks._descouvemont_cases import (
+    ALPHA_C12_NOTEBOOK_A11_FULL,
+    ALPHA_C12_REFERENCES,
+    CoupledColumnReference,
+)
 
 pytest.importorskip("jax")
 
 
-def _solver(reference: AlphaC12Reference, method: str, solvers: tuple[str, ...]) -> lm.Solver:
+def _solver(reference: CoupledColumnReference, method: str, solvers: tuple[str, ...]) -> lm.Solver:
     """Compile the Descouvemont Example 4 α + 12C benchmark."""
 
     return lm.compile(
-        mesh=lm.MeshSpec("legendre", "x", n=reference.n_basis, scale=reference.scale),
+        mesh=lm.MeshSpec(
+            "legendre",
+            "x",
+            n=reference.n_basis,
+            scale=reference.scale,
+            extras={"n_intervals": reference.n_intervals},
+        ),
         channels=alpha_c12_channels(),
         operators=("T+L", "1/r^2"),
         solvers=solvers,
@@ -58,6 +68,7 @@ def _smatrix_from_direct_rmatrix(
             solver.boundary.H_plus_p[energy_index],
             solver.boundary.H_minus_p[energy_index],
             solver.boundary.is_open[energy_index],
+            solver.boundary.k[energy_index],
         )
         smatrix = lm.spectral.smatrix_from_R(
             projected_r,
@@ -67,6 +78,7 @@ def _smatrix_from_direct_rmatrix(
                 H_plus_p=projected_boundary.H_plus_p,
                 H_minus_p=projected_boundary.H_minus_p,
                 is_open=projected_boundary.is_open,
+                k=projected_boundary.k,
             ),
         )
         open_count = alpha_c12_open_channel_count(float(solver.energies[energy_index]))
@@ -76,10 +88,16 @@ def _smatrix_from_direct_rmatrix(
 
 
 @pytest.mark.benchmark
-def test_descouvemont_closed_channel_example_matches_published_first_column_structure() -> None:
-    """The α + 12C benchmark follows the published first-column convention and thresholds."""
+@pytest.mark.parametrize(
+    "reference",
+    ALPHA_C12_REFERENCES,
+    ids=["a9-n25-ns4", "a10-n25-ns4", "a11-n20-ns4"],
+)
+def test_descouvemont_closed_channel_matches_published_first_column(
+    reference: CoupledColumnReference,
+) -> None:
+    """Published Descouvemont Example 4 values remain visible in the suite."""
 
-    reference = ALPHA_C12_REFERENCE_A11
     solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
     potential = lm.assemble_local(
         solver.mesh, alpha_c12_potential, n_channels=len(alpha_c12_channels())
@@ -89,6 +107,18 @@ def test_descouvemont_closed_channel_example_matches_published_first_column_stru
     for energy_index, energy in enumerate(reference.energies):
         open_count = alpha_c12_open_channel_count(float(energy))
         amplitudes, phases = first_column_amplitudes_and_phases(smatrices[energy_index], open_count)
+        amplitudes_match = np.allclose(
+            amplitudes,
+            reference.amplitudes[energy_index],
+            atol=7.0e-3,
+            rtol=7.0e-3,
+        )
+        phases_match = np.allclose(
+            phases,
+            reference.phases[energy_index],
+            atol=3.0e-3,
+            rtol=3.0e-3,
+        )
 
         assert smatrices[energy_index].shape == (open_count, open_count)
         assert np.count_nonzero(projected_boundaries[energy_index]) == open_count
@@ -96,10 +126,42 @@ def test_descouvemont_closed_channel_example_matches_published_first_column_stru
         assert phases.shape[0] == reference.phases[energy_index].shape[0]
         assert np.all(np.isfinite(amplitudes))
         assert np.all(np.isfinite(phases))
+        assert amplitudes_match
+        assert phases_match
 
-    amplitudes_4_mev, phases_4_mev = first_column_amplitudes_and_phases(smatrices[0], open_count=1)
-    assert np.allclose(amplitudes_4_mev, reference.amplitudes[0], atol=7.0e-3, rtol=7.0e-3)
-    assert np.allclose(phases_4_mev, reference.phases[0], atol=3.0e-3, rtol=3.0e-3)
+
+@pytest.mark.benchmark
+def test_descouvemont_closed_channel_demo_matches_full_precision_reference() -> None:
+    """The single-interval notebook regression stays locked to the checked-in full-precision output."""
+
+    reference = ALPHA_C12_NOTEBOOK_A11_FULL
+    solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
+    potential = lm.assemble_local(
+        solver.mesh,
+        alpha_c12_potential,
+        n_channels=len(alpha_c12_channels()),
+    )
+    smatrices, _ = _smatrix_from_direct_rmatrix(solver, potential)
+
+    for energy_index, energy in enumerate(reference.energies):
+        open_count = alpha_c12_open_channel_count(float(energy))
+        amplitudes, phases = first_column_amplitudes_and_phases(smatrices[energy_index], open_count)
+        amplitudes_match = np.allclose(
+            amplitudes,
+            reference.amplitudes[energy_index],
+            atol=1.0e-12,
+            rtol=1.0e-12,
+        )
+        phases_match = np.allclose(
+            phases,
+            reference.phases[energy_index],
+            atol=1.0e-12,
+            rtol=1.0e-12,
+        )
+
+        assert smatrices[energy_index].shape == (open_count, open_count)
+        assert amplitudes_match
+        assert phases_match
 
 
 @pytest.mark.benchmark

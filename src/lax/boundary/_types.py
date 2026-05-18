@@ -40,6 +40,14 @@ class SpectrumObservable(Protocol):
         ...
 
 
+class SpectrumGridObservable(Protocol):
+    """Callable interface for observables aligned to a batched Spectrum grid."""
+
+    def __call__(self, spectra: Spectrum) -> jax.Array:
+        """Evaluate one observable per compile-time energy / Spectrum pair."""
+        ...
+
+
 class GreenFunctionObservable(Protocol):
     """Callable interface for Green's-function evaluation."""
 
@@ -69,6 +77,26 @@ class DirectRMatrixKernel(Protocol):
 
     def __call__(self, potential: jax.Array) -> jax.Array:
         """Evaluate the direct R-matrix on the compile-time energy grid."""
+        ...
+
+
+class DirectGridObservable(Protocol):
+    """Callable interface for aligned-grid observables from batched potentials."""
+
+    def __call__(self, potentials: jax.Array) -> jax.Array:
+        """Evaluate one observable per compile-time energy / potential pair."""
+        ...
+
+
+class InterpolatorBuilder(Protocol):
+    """Callable interface for solver-bound Padé interpolation builders."""
+
+    def __call__(
+        self,
+        values: jax.Array,
+        order: tuple[int, int] | None = None,
+    ) -> Callable[[EnergyLike], jax.Array]:
+        """Build a Padé interpolator over the solver's compile-time energy grid."""
         ...
 
 
@@ -130,6 +158,24 @@ class Integrator(Protocol):
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
+class PropagationMatrices:
+    """Precomputed subinterval-propagation matrices for Legendre-x meshes."""
+
+    n_intervals: int = field(metadata={"static": True})
+    basis_size_per_interval: int = field(metadata={"static": True})
+    interval_width: float = field(metadata={"static": True})
+    local_nodes: jax.Array
+    local_weights: jax.Array
+    kinetic: jax.Array
+    blo0: jax.Array
+    blo1: jax.Array
+    blo2: jax.Array
+    q1: jax.Array
+    q2: jax.Array
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
 class Mesh:
     """Concrete mesh data cached inside a compiled solver."""
 
@@ -137,10 +183,13 @@ class Mesh:
     regularization: Regularization = field(metadata={"static": True})
     n: int = field(metadata={"static": True})
     scale: float = field(metadata={"static": True})
+    n_intervals: int = field(metadata={"static": True})
+    basis_size_per_interval: int = field(metadata={"static": True})
     nodes: jax.Array
     weights: jax.Array
     radii: jax.Array
     basis_at_boundary: jax.Array
+    propagation: PropagationMatrices | None = None
 
 
 @jax.tree_util.register_dataclass
@@ -166,6 +215,7 @@ class BoundaryValues:
     H_plus_p: jax.Array
     H_minus_p: jax.Array
     is_open: jax.Array
+    k: jax.Array | None = None
 
 
 @jax.tree_util.register_dataclass
@@ -197,7 +247,16 @@ class Solver:
     greens: GreenFunctionObservable | None = None
     wavefunction: WavefunctionObservable | None = None
     eigh: EigenpairAccessor | None = None
+    rmatrix_grid: SpectrumGridObservable | None = None
+    smatrix_grid: SpectrumGridObservable | None = None
+    phases_grid: SpectrumGridObservable | None = None
     rmatrix_direct: DirectRMatrixKernel | None = None
+    rmatrix_direct_grid: DirectGridObservable | None = None
+    smatrix_direct_grid: DirectGridObservable | None = None
+    phases_direct_grid: DirectGridObservable | None = None
+    interpolate_rmatrix: InterpolatorBuilder | None = None
+    interpolate_smatrix: InterpolatorBuilder | None = None
+    interpolate_phases: InterpolatorBuilder | None = None
     to_grid_vector: GridVectorTransform | None = None
     from_grid_vector: FromGridVectorTransform | None = None
     to_grid_matrix: GridMatrixTransform | None = None
@@ -209,6 +268,7 @@ class Solver:
 __all__ = [
     "BoundaryValues",
     "DoubleFourierTransform",
+    "DirectGridObservable",
     "DirectRMatrixKernel",
     "EigenpairAccessor",
     "EnergyLike",
@@ -217,11 +277,14 @@ __all__ = [
     "GreenFunctionObservable",
     "GridMatrixTransform",
     "GridVectorTransform",
+    "InterpolatorBuilder",
     "Integrator",
     "Mesh",
     "OperatorMatrices",
+    "PropagationMatrices",
     "RMatrixObservable",
     "Solver",
+    "SpectrumGridObservable",
     "SpectrumKernel",
     "SpectrumObservable",
     "TransformMatrices",

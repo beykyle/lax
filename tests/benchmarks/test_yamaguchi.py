@@ -23,6 +23,8 @@ This test is the keystone benchmark: it exercises the full chain
 import numpy as np
 import pytest
 
+from tests.benchmarks._descouvemont_cases import YAMAGUCHI_REFERENCES, YamaguchiReference
+
 pytest.importorskip("jax")  # skip gracefully if JAX not installed
 pytest.importorskip("scipy")
 
@@ -30,9 +32,7 @@ HBAR2_2MU = 41.472  # MeV·fm²   Descouvemont eq. 46
 ALPHA = 0.2316053  # fm⁻¹
 BETA = 1.3918324  # fm⁻¹
 
-YAMAGUCHI_CASES = [
-    (8.0, 10, 0.1, -15.077, 0.01),
-    (8.0, 10, 10.0, 85.637, 0.01),
+YAMAGUCHI_ASYMPTOTIC_CASES = [
     (15.0, 20, 0.1, -15.078689, 1e-5),
     (15.0, 20, 10.0, 85.634560, 1e-5),
 ]
@@ -73,6 +73,7 @@ def _phase_from_direct_rmatrix(solver, potential):
             H_plus_p=solver.boundary.H_plus_p[energy_index],
             H_minus_p=solver.boundary.H_minus_p[energy_index],
             is_open=solver.boundary.is_open[energy_index],
+            k=solver.boundary.k[energy_index],
         )
         smatrix = lm.spectral.smatrix_from_R(r_values[energy_index], boundary)
         phases.append(lm.spectral.phases_from_S(smatrix))
@@ -80,9 +81,87 @@ def _phase_from_direct_rmatrix(solver, potential):
 
 
 @pytest.mark.benchmark
-@pytest.mark.parametrize("a,n,E,ref_deg,tol", YAMAGUCHI_CASES)
-def test_yamaguchi_phase_shifts(a, n, E, ref_deg, tol):
-    """Phase shifts match Descouvemont/Baye reference values."""
+@pytest.mark.parametrize(
+    "reference",
+    YAMAGUCHI_REFERENCES,
+    ids=["a8-n10", "a8-n15", "a12-n15"],
+)
+def test_yamaguchi_phase_shifts(reference: YamaguchiReference) -> None:
+    """Phase shifts match the published Descouvemont Example 5 values."""
+    import jax.numpy as jnp
+
+    import lax as lm
+
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=reference.n_basis, scale=reference.scale),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
+        operators=("T+L",),
+        solvers=("spectrum", "phases"),
+        energies=jnp.asarray(reference.energies),
+    )
+    potential = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
+    spectrum = solver.spectrum(potential)
+    phases_deg = np.asarray(solver.phases(spectrum))[:, 0] * (180.0 / np.pi)
+
+    assert np.allclose(phases_deg, reference.phases_deg, atol=1.0e-2, rtol=0.0)
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize(
+    "reference",
+    YAMAGUCHI_REFERENCES,
+    ids=["a8-n10", "a8-n15", "a12-n15"],
+)
+def test_yamaguchi_phase_shifts_direct_rmatrix(reference: YamaguchiReference) -> None:
+    """Direct R-matrix phase shifts match the published Descouvemont Example 5 values."""
+
+    import lax as lm
+
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=reference.n_basis, scale=reference.scale),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=reference.energies,
+        method="linear_solve",
+    )
+    potential = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
+    phases_deg = np.asarray(_phase_from_direct_rmatrix(solver, potential))[:, 0] * (180.0 / np.pi)
+
+    assert np.allclose(phases_deg, reference.phases_deg, atol=1.0e-2, rtol=0.0)
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize(
+    "reference",
+    YAMAGUCHI_REFERENCES,
+    ids=["a8-n10", "a8-n15", "a12-n15"],
+)
+def test_yamaguchi_direct_matches_spectral(reference: YamaguchiReference) -> None:
+    """Direct and spectral Yamaguchi phase shifts agree on each published mesh."""
+
+    import lax as lm
+
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=reference.n_basis, scale=reference.scale),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
+        operators=("T+L",),
+        solvers=("spectrum", "rmatrix", "phases", "rmatrix_direct"),
+        energies=reference.energies,
+    )
+    potential = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
+    spectrum = solver.spectrum(potential)
+    spectral_delta = np.asarray(solver.phases(spectrum))[:, 0]
+    direct_delta = np.asarray(_phase_from_direct_rmatrix(solver, potential))[:, 0]
+
+    assert np.allclose(direct_delta, spectral_delta, atol=1.0e-10, rtol=1.0e-10)
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("a,n,E,ref_deg,tol", YAMAGUCHI_ASYMPTOTIC_CASES)
+def test_yamaguchi_large_radius_matches_baye_reference(a, n, E, ref_deg, tol):
+    """The large-radius single-channel limit matches the Baye/Hesse reference values."""
+
     import jax.numpy as jnp
 
     import lax as lm
@@ -94,58 +173,12 @@ def test_yamaguchi_phase_shifts(a, n, E, ref_deg, tol):
         solvers=("spectrum", "phases"),
         energies=jnp.array([E]),
     )
-    V = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
-    spec = solver.spectrum(V)
-    δ = float(solver.phases(spec)[0, 0]) * (180.0 / np.pi)
-
-    assert abs(δ - ref_deg) < tol, (
-        f"N={n}, a={a}, E={E}: δ={δ:.6f}° vs ref={ref_deg:.6f}° (tol={tol})"
-    )
-
-
-@pytest.mark.benchmark
-@pytest.mark.parametrize("a,n,E,ref_deg,tol", YAMAGUCHI_CASES)
-def test_yamaguchi_phase_shifts_direct_rmatrix(a, n, E, ref_deg, tol):
-    """Direct R-matrix phase shifts match Descouvemont/Baye reference values."""
-
-    import lax as lm
-
-    solver = lm.compile(
-        mesh=lm.MeshSpec("legendre", "x", n=n, scale=a),
-        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
-        operators=("T+L",),
-        solvers=("rmatrix_direct",),
-        energies=np.array([E]),
-        method="linear_solve",
-    )
-    V = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
-    delta = float(_phase_from_direct_rmatrix(solver, V)[0, 0]) * (180.0 / np.pi)
+    potential = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
+    delta = float(solver.phases(solver.spectrum(potential))[0, 0]) * (180.0 / np.pi)
 
     assert abs(delta - ref_deg) < tol, (
-        f"N={n}, a={a}, E={E}: δ_direct={delta:.6f}° vs ref={ref_deg:.6f}° (tol={tol})"
+        f"N={n}, a={a}, E={E}: δ={delta:.6f}° vs ref={ref_deg:.6f}° (tol={tol})"
     )
-
-
-@pytest.mark.benchmark
-@pytest.mark.parametrize("a,n,E,_,__", YAMAGUCHI_CASES)
-def test_yamaguchi_direct_matches_spectral(a, n, E, _, __):
-    """Direct and spectral Yamaguchi phase shifts agree on the same mesh and energy."""
-
-    import lax as lm
-
-    solver = lm.compile(
-        mesh=lm.MeshSpec("legendre", "x", n=n, scale=a),
-        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
-        operators=("T+L",),
-        solvers=("spectrum", "rmatrix", "phases", "rmatrix_direct"),
-        energies=np.array([E]),
-    )
-    V = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
-    spec = solver.spectrum(V)
-    spectral_delta = float(solver.phases(spec)[0, 0])
-    direct_delta = float(_phase_from_direct_rmatrix(solver, V)[0, 0])
-
-    assert abs(direct_delta - spectral_delta) < 1.0e-10
 
 
 @pytest.mark.benchmark

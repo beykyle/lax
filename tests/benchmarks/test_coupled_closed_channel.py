@@ -48,9 +48,9 @@ def _single_channel_solver() -> lm.Solver:
 def _toy_potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:
     """Return a smooth two-channel local potential in MeV."""
 
-    diagonal_open = -6.0 * jnp.exp(-(radii / 2.1) ** 2)
-    diagonal_closed = -4.5 * jnp.exp(-(radii / 2.6) ** 2)
-    coupling = -1.25 * jnp.exp(-(radii / 2.3) ** 2)
+    diagonal_open = -6.0 * jnp.exp(-((radii / 2.1) ** 2))
+    diagonal_closed = -4.5 * jnp.exp(-((radii / 2.6) ** 2))
+    coupling = -1.25 * jnp.exp(-((radii / 2.3) ** 2))
 
     if channel_index == coupled_index == 0:
         return diagonal_open
@@ -95,6 +95,7 @@ def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential: jax.Array) -> np.
             solver.boundary.H_plus_p[energy_index],
             solver.boundary.H_minus_p[energy_index],
             solver.boundary.is_open[energy_index],
+            solver.boundary.k[energy_index],
         )
         smatrix = lm.spectral.smatrix_from_R(
             projected_r,
@@ -104,6 +105,7 @@ def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential: jax.Array) -> np.
                 H_plus_p=projected_boundary.H_plus_p,
                 H_minus_p=projected_boundary.H_minus_p,
                 is_open=projected_boundary.is_open,
+                k=projected_boundary.k,
             ),
         )
         smatrices.append(np.asarray(smatrix))

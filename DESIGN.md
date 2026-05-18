@@ -1481,6 +1481,9 @@ def _solve_pade_lsq(samples, s, p, q):
 - **Order auto-selection.** The default `(N_E//2 - 1, N_E//2)` gives a diagonal Padé (`p ≈ q`), which is typically well-conditioned. Users with prior knowledge of the analytic structure can pass an explicit `order`.
 - **Spurious poles.** Standard Padé construction can produce zeros of the denominator inside the interpolation interval (Froissart doublets). For resonance fitting where the pole structure is physically meaningful, downstream tools can analyze `b_coeffs` and warn or project. v1 does not enforce real poles automatically; future work could add an `enforce_real_poles=True` flag using Stoer-Bulirsch or barycentric variants.
 - **Differentiability.** The interpolator is differentiable in `values` (so you can fit potential parameters against finely-sampled experimental data while only paying for N_E spectra) and in `E` (so resonance positions can be tracked via `jax.grad(evaluate)(E_resonance)`).
+- **Compile-integrated scope.** The planned factory wiring is limited to **R-matrix-, S-matrix-, and phase-shift observables**. Green's functions and internal wavefunctions are excluded: for energy-independent problems they are already evaluable exactly from one `Spectrum` at arbitrary runtime energies, while for energy-dependent problems interpolating eigenpairs directly is ill-posed because ordering and phases can change across the grid.
+- **Energy-dependent API shape.** The future `compile()` integration should add **aligned-grid** helpers rather than overloading the existing energy-independent methods. For the spectral path this means helpers such as `rmatrix_grid(spec_grid)`, `smatrix_grid(spec_grid)`, and `phases_grid(spec_grid)` that evaluate `(spec_i, E_i, boundary_i)` pointwise along the compile-time grid. For the direct path the matching helpers are `rmatrix_direct_grid(V_grid)` plus optional `smatrix_direct_grid(V_grid)` and `phases_direct_grid(V_grid)`. In both cases interpolation builders such as `interpolate_rmatrix`, `interpolate_smatrix`, and `interpolate_phases` consume the aligned samples and return JIT-compiled Padé callables.
+- **Spectral vs direct capability.** The direct path may support the same value-only Padé interface for `R`, `S`, and phases, but only the spectral path admits cheap frozen-potential off-grid continuation near a knot: from `spec_i = spectrum(V(E_i))`, the user can evaluate `R(E; V(E_i))` and its energy derivatives in a neighborhood of `E_i` without additional linear solves. That structure is reserved for a derivative-enhanced interpolation scheme in a later phase.
 
 ---
 
@@ -1894,7 +1897,7 @@ Three structural changes from the previous design:
 - It does not accept potentials. The solver is potential-agnostic.
 - It does not perform per-call setup. Everything not depending on `V` is done here, once.
 - It does not implicitly broadcast over potential parameters. The user uses `jax.vmap` over their parametric `V` builder.
-- It does not handle off-grid energies internally for S-matrix or phases. Those require Coulomb boundary values (mpmath, not JIT-able) and so are pinned to the compile-time grid. For off-grid evaluation the user calls `lax.spectral.pade_interpolate`.
+- It does not change the meaning of the existing energy-independent observable methods. `solver.smatrix(spec)` and `solver.phases(spec)` always evaluate one fixed `Spectrum` against the full compile-time boundary grid; they must not be repurposed for energy-dependent `V(E)`. The planned Phase 9 interpolation wiring therefore adds separate aligned-grid helpers for `R`, `S`, and phases rather than overloading these methods.
 
 ---
 
@@ -2422,10 +2425,30 @@ The recommended sequence for offline development. Each step ends with at least o
 **Phase 9 — Production**
 
 23. Closed-channel boundary handling (Whittaker functions); verify against Descouvemont's closed-channel examples.
-24. R-matrix propagation [2, §2.4].
-25. Performance optimization: complex-symmetric Lanczos in JAX (long-term).
+24. Wire **plain value-only Padé interpolation** into `compile()` for `R`, `S`, and phases in a way that preserves the existing semantics of the energy-independent methods.
+    - **Spectral path.** Add aligned-grid helpers `rmatrix_grid(spec_grid)`, `smatrix_grid(spec_grid)`, and `phases_grid(spec_grid)` for energy-dependent workflows so the runtime does the diagonal pairing `(spec_i, E_i, boundary_i) -> observable_i` rather than the incorrect Cartesian evaluation over all compile-time energies.
+    - **Direct path.** Add `rmatrix_direct_grid(V_grid)` and, optionally, `smatrix_direct_grid(V_grid)` / `phases_direct_grid(V_grid)` for `method="linear_solve"`. These are the only observables that should participate in compile-bound interpolation for the direct solver; Green's functions and wavefunctions remain spectrum-only features.
+    - **Interpolation builders.** Add explicit factory-bound helpers `interpolate_rmatrix`, `interpolate_smatrix`, and `interpolate_phases` that consume aligned samples and return JIT-compiled Padé callables. Keep `lax.spectral.pade_interpolate` as the low-level primitive.
+    - **Tests.**
+      1. Unit-test that the new aligned-grid spectral helpers match the manual `jax.vmap(S_at_own_energy)(spec_grid, energies, boundary)` pattern from §16.7.
+      2. Unit-test that the direct aligned-grid helpers match manual per-energy `rmatrix_direct` + boundary matching on the same energy-dependent toy problem.
+      3. Benchmark-test interpolation accuracy by comparing coarse-grid Padé `S(E)` and `δ(E)` against a denser reference grid for a smooth energy-dependent potential; require the interpolant error to stay below a fixed tolerance across the interval.
+      4. Regression-test semantics: `solver.smatrix(spec)` and `solver.phases(spec)` must continue to mean "evaluate one fixed energy-independent spectrum on the compile-time grid" and must not silently switch to aligned-grid behavior.
+25. R-matrix propagation [2, §2.4].
+26. Performance optimization: complex-symmetric Lanczos in JAX (long-term).
 
-By the end of Phase 4 the library has feature parity with the user's prototype but with the spectral approach and clean architecture. Phases 5–6 add the major value-adds (coupled channels, Green's, Padé). Phase 7 handles complex V. Phases 8–9 are completion and production hardening.
+**Phase 10 — Interpolation refinement**
+
+27. Add **derivative-enhanced Padé / Hermite-Padé interpolation** for the spectral path, using the frozen-potential local model available from `spec_i = spectrum(V(E_i))`.
+    - At each knot `E_i`, compute not only `R(E_i)` but also local fixed-potential derivatives such as `∂R/∂E |_{V(E_i)}` from the spectral representation. Use these derivatives to improve interpolation of the aligned-grid samples for smooth energy-dependent potentials.
+    - Restrict the first implementation to the spectral path. The direct path can still use value-only Padé, but it does not enjoy the same cheap reusable local continuation around each knot.
+    - Apply the refinement to `R` first; if stable, extend it to `S` and phases by combining the improved `R(E)` interpolant with interpolated boundary values.
+    - **Tests.**
+      1. Unit-test the analytic spectral derivative of `R` against automatic differentiation of `rmatrix_from_spectrum`.
+      2. Benchmark-test derivative-enhanced Padé against plain Padé on a smooth energy-dependent problem and require strictly smaller interpolation error on a dense validation grid.
+      3. Stress-test near narrow resonances or rapidly varying phase motion to verify that derivative-enhanced Padé improves local fidelity without introducing unacceptable spurious poles.
+
+By the end of Phase 4 the library has feature parity with the user's prototype but with the spectral approach and clean architecture. Phases 5–6 add the major value-adds (coupled channels, Green's, Padé). Phase 7 handles complex V. Phases 8–9 are completion and production hardening, while Phase 10 revisits interpolation quality using the local analytic structure of the spectral representation.
 
 Estimated effort, one person working part-time:
 
@@ -2433,7 +2456,7 @@ Estimated effort, one person working part-time:
 - Phase 4: 1 week.
 - Phases 5–6: 2 weeks.
 - Phase 7: 2 weeks.
-- Phases 8–9: open-ended.
+- Phases 8–10: open-ended.
 
 ---
 

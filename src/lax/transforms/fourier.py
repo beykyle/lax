@@ -140,9 +140,7 @@ def make_double_fourier(transform_matrices: TransformMatrices) -> DoubleFourierT
     """Return a JIT-compiled double Fourier-Bessel transform for mesh kernels."""
 
     if transform_matrices.F_momentum is None:
-        msg = (
-            "TransformMatrices.F_momentum is required to build the double Fourier transform."
-        )
+        msg = "TransformMatrices.F_momentum is required to build the double Fourier transform."
         raise ValueError(msg)
 
     return cast(
@@ -151,7 +149,9 @@ def make_double_fourier(transform_matrices: TransformMatrices) -> DoubleFourierT
     )
 
 
-def _fourier_vector(values: jax.Array, fourier_matrices: jax.Array, channel_index: int) -> jax.Array:
+def _fourier_vector(
+    values: jax.Array, fourier_matrices: jax.Array, channel_index: int
+) -> jax.Array:
     """Project mesh coefficients `(N,)` onto the momentum grid `(M_k,)`."""
 
     matrix = fourier_matrices[channel_index]
@@ -159,7 +159,9 @@ def _fourier_vector(values: jax.Array, fourier_matrices: jax.Array, channel_inde
     return result
 
 
-def _fourier_matrix(values: jax.Array, fourier_matrices: jax.Array, channel_index: int) -> jax.Array:
+def _fourier_matrix(
+    values: jax.Array, fourier_matrices: jax.Array, channel_index: int
+) -> jax.Array:
     """Project a mesh kernel `(N, N)` onto the momentum grid `(M_k, M_k)`."""
 
     matrix = fourier_matrices[channel_index]

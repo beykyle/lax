@@ -35,6 +35,7 @@ def compute_boundary_values(
     H_plus_p = np.zeros((n_energies, n_channels), dtype=np.complex128)
     H_minus_p = np.zeros((n_energies, n_channels), dtype=np.complex128)
     is_open = np.zeros((n_energies, n_channels), dtype=bool)
+    k_values = np.zeros((n_energies, n_channels), dtype=np.float64)
 
     for energy_index, energy in enumerate(energies):
         for channel_index, channel in enumerate(channels):
@@ -46,6 +47,7 @@ def compute_boundary_values(
                     H_plus_p,
                     H_minus_p,
                     is_open,
+                    k_values,
                     energy_index,
                     channel_index,
                     channel,
@@ -60,6 +62,7 @@ def compute_boundary_values(
                     H_plus_p,
                     H_minus_p,
                     is_open,
+                    k_values,
                     energy_index,
                     channel_index,
                     channel,
@@ -74,6 +77,7 @@ def compute_boundary_values(
         H_plus_p=_to_jax_array(H_plus_p),
         H_minus_p=_to_jax_array(H_minus_p),
         is_open=_to_jax_array(is_open),
+        k=_to_jax_array(k_values),
     )
 
 
@@ -83,6 +87,7 @@ def _fill_open_channel(
     H_plus_p: np.ndarray,
     H_minus_p: np.ndarray,
     is_open: np.ndarray,
+    k_values: np.ndarray,
     energy_index: int,
     channel_index: int,
     channel: ChannelSpec,
@@ -114,6 +119,7 @@ def _fill_open_channel(
     H_plus_p[energy_index, channel_index] = rho * (d_g + 1.0j * d_f)
     H_minus_p[energy_index, channel_index] = rho * (d_g - 1.0j * d_f)
     is_open[energy_index, channel_index] = True
+    k_values[energy_index, channel_index] = k
 
 
 def _fill_closed_channel(
@@ -122,6 +128,7 @@ def _fill_closed_channel(
     H_plus_p: np.ndarray,
     H_minus_p: np.ndarray,
     is_open: np.ndarray,
+    k_values: np.ndarray,
     energy_index: int,
     channel_index: int,
     channel: ChannelSpec,
@@ -146,6 +153,7 @@ def _fill_closed_channel(
     H_plus_p[energy_index, channel_index] = rho * derivative
     H_minus_p[energy_index, channel_index] = rho * derivative
     is_open[energy_index, channel_index] = False
+    k_values[energy_index, channel_index] = k
 
 
 def _sommerfeld(z1z2: tuple[int, int], k: float, mass_factor: float) -> float:

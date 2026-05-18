@@ -4,6 +4,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import lax as lm
+from lax._descouvemont_utils import np_j1_channels, reid_np_j1_potential
 from lax.boundary._types import BoundaryValues
 from lax.spectral import (
     Spectrum,
@@ -123,6 +125,37 @@ def test_smatrix_from_R_is_unitary_for_real_r() -> None:
     identity = S.conj().T @ S
 
     assert np.allclose(identity, np.eye(1), atol=1.0e-12)
+
+
+def test_smatrix_from_R_is_symmetric_and_unitary_for_real_two_channel_r() -> None:
+    """A physical real two-channel input preserves time-reversal symmetry and unitarity."""
+
+    energy = np.array([12.0], dtype=np.float64)
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=20, scale=7.0),
+        channels=np_j1_channels(),
+        operators=("T+L", "1/r^2"),
+        solvers=("spectrum", "rmatrix"),
+        energies=energy,
+    )
+    potential = lm.assemble_local(solver.mesh, reid_np_j1_potential, n_channels=2)
+    assert solver.spectrum is not None
+    assert solver.rmatrix is not None
+    assert solver.boundary is not None
+
+    spectrum = solver.spectrum(potential)
+    R = solver.rmatrix(spectrum, float(energy[0]))
+    boundary = BoundaryValues(
+        H_plus=solver.boundary.H_plus[0],
+        H_minus=solver.boundary.H_minus[0],
+        H_plus_p=solver.boundary.H_plus_p[0],
+        H_minus_p=solver.boundary.H_minus_p[0],
+        is_open=solver.boundary.is_open[0],
+    )
+    S = np.asarray(smatrix_from_R(R, boundary))
+
+    assert np.allclose(S, S.T, atol=1.0e-12)
+    assert np.allclose(S.conj().T @ S, np.eye(2), atol=1.0e-12)
 
 
 def test_phases_from_S_returns_half_argument() -> None:

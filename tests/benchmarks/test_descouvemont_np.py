@@ -8,8 +8,8 @@ import lax as lm
 from lax._descouvemont_utils import np_j1_channels, reid_np_j1_potential
 from lax.boundary import BoundaryValues
 from tests.benchmarks._descouvemont_cases import (
-    NP_J1_REFERENCE_A7,
-    NP_J1_REFERENCE_A8,
+    NP_J1_REFERENCE_A7_N60_NS1,
+    NP_J1_REFERENCES,
     NpJ1Reference,
 )
 
@@ -20,7 +20,13 @@ def _solver(reference: NpJ1Reference, method: str, solvers: tuple[str, ...]) -> 
     """Compile the Descouvemont Example 2 n-p J=1+ benchmark."""
 
     return lm.compile(
-        mesh=lm.MeshSpec("legendre", "x", n=reference.n_basis, scale=reference.scale),
+        mesh=lm.MeshSpec(
+            "legendre",
+            "x",
+            n=reference.n_basis,
+            scale=reference.scale,
+            extras={"n_intervals": reference.n_intervals},
+        ),
         channels=np_j1_channels(),
         operators=("T+L", "1/r^2"),
         solvers=solvers,
@@ -44,6 +50,7 @@ def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential: jax.Array) -> np.
             H_plus_p=solver.boundary.H_plus_p[energy_index],
             H_minus_p=solver.boundary.H_minus_p[energy_index],
             is_open=solver.boundary.is_open[energy_index],
+            k=solver.boundary.k[energy_index],
         )
         smatrix = lm.spectral.smatrix_from_R(r_values[energy_index], boundary)
         smatrices.append(np.asarray(smatrix))
@@ -63,40 +70,51 @@ def _paper_observables(smatrices: np.ndarray) -> tuple[np.ndarray, np.ndarray, n
     return np.asarray(phase_11), np.asarray(phase_22), eta_12
 
 
+def _paper_observables_from_direct(
+    reference: NpJ1Reference,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the published observables from the direct R-matrix path."""
+
+    solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
+    potential = lm.assemble_local(solver.mesh, reid_np_j1_potential, n_channels=2)
+    smatrices = _smatrix_from_direct_rmatrix(solver, potential)
+    return _paper_observables(smatrices)
+
+
 @pytest.mark.benchmark
 @pytest.mark.parametrize(
-    ("reference", "atol"),
-    [
-        (NP_J1_REFERENCE_A7, 3.0e-3),
-        (NP_J1_REFERENCE_A8, 3.0e-3),
-    ],
-    ids=["a7", "a8"],
+    "reference",
+    NP_J1_REFERENCES,
+    ids=["a7-n60-ns1", "a7-n30-ns2", "a8-n25-ns3"],
 )
-def test_descouvemont_np_matches_appendix_b(
-    reference: NpJ1Reference,
-    atol: float,
-) -> None:
-    """The coupled n-p eigenphases reproduce Descouvemont Appendix B."""
+def test_descouvemont_np_matches_appendix_b(reference: NpJ1Reference) -> None:
+    """The coupled n-p eigenphases reproduce the published Appendix B values."""
 
-    solver = _solver(reference, "eigh", ("spectrum", "smatrix"))
-    potential = lm.assemble_local(solver.mesh, reid_np_j1_potential, n_channels=2)
+    phase_11, phase_22, eta_12 = _paper_observables_from_direct(reference)
 
-    assert solver.spectrum is not None
-    assert solver.smatrix is not None
-
-    smatrices = np.asarray(solver.smatrix(solver.spectrum(potential)))
-    phase_11, phase_22, eta_12 = _paper_observables(smatrices)
-
-    assert np.allclose(phase_11, reference.phase_11, atol=atol, rtol=0.0)
-    assert np.allclose(phase_22, reference.phase_22, atol=atol, rtol=0.0)
-    assert np.all(eta_12 > 0.0)
+    assert np.allclose(phase_11, reference.phase_11, atol=3.0e-3, rtol=0.0)
+    assert np.allclose(phase_22, reference.phase_22, atol=3.0e-3, rtol=0.0)
 
 
 @pytest.mark.benchmark
-@pytest.mark.parametrize("reference", [NP_J1_REFERENCE_A7, NP_J1_REFERENCE_A8], ids=["a7", "a8"])
-def test_descouvemont_np_spectral_and_direct_paths_agree(reference: NpJ1Reference) -> None:
+@pytest.mark.parametrize(
+    "reference",
+    NP_J1_REFERENCES,
+    ids=["a7-n60-ns1", "a7-n30-ns2", "a8-n25-ns3"],
+)
+def test_descouvemont_np_eta12_matches_appendix_b(reference: NpJ1Reference) -> None:
+    """The published `eta_12 = |S_12|` values reproduce Appendix B."""
+
+    _, _, eta_12 = _paper_observables_from_direct(reference)
+
+    assert np.allclose(eta_12, reference.eta_12, atol=3.0e-3, rtol=0.0)
+
+
+@pytest.mark.benchmark
+def test_descouvemont_np_spectral_and_direct_paths_agree() -> None:
     """The n-p spectral and direct coupled-channel paths agree."""
 
+    reference = NP_J1_REFERENCE_A7_N60_NS1
     spectral_solver = _solver(reference, "eigh", ("spectrum", "smatrix"))
     direct_solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
     spectral_potential = lm.assemble_local(spectral_solver.mesh, reid_np_j1_potential, n_channels=2)

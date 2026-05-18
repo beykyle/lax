@@ -27,15 +27,23 @@ def smatrix_from_R(R: jax.Array, boundary_at_energy: BoundaryValues) -> jax.Arra
     H_minus = jnp.diag(boundary_at_energy.H_minus)
     H_plus_p = jnp.diag(boundary_at_energy.H_plus_p)
     H_minus_p = jnp.diag(boundary_at_energy.H_minus_p)
+    if boundary_at_energy.k is None:
+        k = jnp.ones(R.shape[0], dtype=R.dtype)  # pyright: ignore[reportUnknownMemberType] -- JAX ones stubs are imprecise.
+    else:
+        k = boundary_at_energy.k.astype(R.dtype)
+    sqrt_k = jnp.sqrt(k)
+    K = jnp.diag(sqrt_k)
+    Kinv = jnp.diag(1.0 / sqrt_k)
+    normalized_R = K @ R @ Kinv
 
-    numerator = H_minus - R @ H_minus_p
-    denominator = H_plus - R @ H_plus_p
+    numerator = H_minus - normalized_R @ H_minus_p
+    denominator = H_plus - normalized_R @ H_plus_p
     matrix = cast(
         jax.Array,
-        jnp.linalg.solve(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the transpose result type here.
-            denominator.T,
-            numerator.T,
-        ).T,
+        jnp.linalg.solve(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+            denominator,
+            numerator,
+        ),
     )
     return matrix
 
@@ -100,4 +108,9 @@ def coupled_channel_parameters_from_S(S: jax.Array) -> CoupledChannelParameters:
     )
 
 
-__all__ = ["CoupledChannelParameters", "coupled_channel_parameters_from_S", "phases_from_S", "smatrix_from_R"]
+__all__ = [
+    "CoupledChannelParameters",
+    "coupled_channel_parameters_from_S",
+    "phases_from_S",
+    "smatrix_from_R",
+]
