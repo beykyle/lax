@@ -11,6 +11,7 @@ import jax
 
 jax.config.update("jax_enable_x64", True)  # type: ignore[no-untyped-call]
 
+import lax.models as models  # noqa: E402
 import lax.spectral as spectral  # noqa: E402
 from lax.boundary._types import Solver  # noqa: E402
 from lax.compile import compile  # noqa: E402
@@ -24,5 +25,6 @@ __all__ = [
     "assemble_local",
     "assemble_nonlocal",
     "compile",
+    "models",
     "spectral",
 ]

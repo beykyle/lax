@@ -23,7 +23,7 @@ This test is the keystone benchmark: it exercises the full chain
 import numpy as np
 import pytest
 
-from tests.benchmarks._descouvemont_cases import YAMAGUCHI_REFERENCES, YamaguchiReference
+from tests.benchmarks._reference_cases import YAMAGUCHI_REFERENCES, YamaguchiReference
 
 pytest.importorskip("jax")  # skip gracefully if JAX not installed
 pytest.importorskip("scipy")

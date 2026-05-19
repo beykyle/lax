@@ -1,4 +1,10 @@
-"""Bound runtime observable closures for compiled solvers."""
+"""Pickle-safe observable wrappers bound to compiled solver caches.
+
+The public ``Solver`` bundle stores module-level callable objects rather than local
+closures so it can round-trip through stdlib ``pickle``. This module provides those
+wrappers plus the helper functions that bind compile-time mesh, energy-grid, and
+boundary data to the runtime spectral formulas from ``lax.spectral``.
+"""
 
 from __future__ import annotations
 
@@ -261,30 +267,36 @@ def bind_observables(
     WavefunctionObservable,
     EigenpairAccessor,
 ]:
-    """Bind solver observables to cached mesh and boundary data. [DESIGN.md §11.2]"""
+    """Bind pointwise spectral observables to one compiled solver.
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh cache containing the channel radius and basis boundary values.
+    channels
+        Channel layout baked into the solver.
+    energies
+        Compile-time energy grid. It is stored on matching-dependent observables even
+        though pointwise R and Green's functions can be evaluated at arbitrary energy.
+    boundary
+        Compile-time boundary values for matching-dependent observables. When absent,
+        only spectrum-only observables are returned.
+
+    Returns
+    -------
+    tuple
+        Bound runtime entry points for the R-matrix, S-matrix, phase shifts, Green's
+        function, internal wavefunction, and raw eigensystem access.
+    """
 
     channel_radius = mesh.scale
     mass_factor = _uniform_mass_factor(channels)
     rmatrix = _RMatrixObservable(channel_radius=channel_radius, mass_factor=mass_factor)
-    smatrix = (
-        _SMatrixObservable(
-            energies=energies,
-            boundary=boundary,
-            channel_radius=channel_radius,
-            mass_factor=mass_factor,
-        )
-        if boundary is not None
-        else None
-    )
-    phases = (
-        _PhasesObservable(
-            energies=energies,
-            boundary=boundary,
-            channel_radius=channel_radius,
-            mass_factor=mass_factor,
-        )
-        if boundary is not None
-        else None
+    smatrix, phases = _matching_observables(
+        energies=energies,
+        boundary=boundary,
+        channel_radius=channel_radius,
+        mass_factor=mass_factor,
     )
     greens = _GreenFunctionObservable(mass_factor=mass_factor)
     wavefunction = _WavefunctionObservable(mass_factor=mass_factor)
@@ -299,7 +311,26 @@ def bind_grid_observables(
     energies: jax.Array,
     boundary: BoundaryValues | None,
 ) -> tuple[SpectrumGridObservable, SpectrumGridObservable | None, SpectrumGridObservable | None]:
-    """Bind aligned-grid spectral observables for energy-dependent workflows."""
+    """Bind aligned-grid spectral observables for energy-dependent workflows.
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh cache.
+    channels
+        Channel layout baked into the solver.
+    energies
+        Compile-time energy grid aligned with the batched spectra.
+    boundary
+        Compile-time matching data. When absent, only the aligned-grid R-matrix
+        observable is returned.
+
+    Returns
+    -------
+    tuple
+        Bound aligned-grid observables for ``R(E_i; spec_i)``, ``S(E_i; spec_i)``,
+        and ``δ(E_i; spec_i)``.
+    """
 
     channel_radius = mesh.scale
     mass_factor = _uniform_mass_factor(channels)
@@ -308,25 +339,11 @@ def bind_grid_observables(
         channel_radius=channel_radius,
         mass_factor=mass_factor,
     )
-    smatrix_grid = (
-        _SMatrixGridObservable(
-            energies=energies,
-            boundary=boundary,
-            channel_radius=channel_radius,
-            mass_factor=mass_factor,
-        )
-        if boundary is not None
-        else None
-    )
-    phases_grid = (
-        _PhasesGridObservable(
-            energies=energies,
-            boundary=boundary,
-            channel_radius=channel_radius,
-            mass_factor=mass_factor,
-        )
-        if boundary is not None
-        else None
+    smatrix_grid, phases_grid = _matching_grid_observables(
+        energies=energies,
+        boundary=boundary,
+        channel_radius=channel_radius,
+        mass_factor=mass_factor,
     )
     return rmatrix_grid, smatrix_grid, phases_grid
 
@@ -335,7 +352,22 @@ def bind_direct_grid_observables(
     rmatrix_direct_grid: DirectGridObservable,
     boundary: BoundaryValues | None,
 ) -> tuple[DirectGridObservable | None, DirectGridObservable | None]:
-    """Bind aligned-grid direct S-matrix and phase observables."""
+    """Bind aligned-grid direct S-matrix and phase observables.
+
+    Parameters
+    ----------
+    rmatrix_direct_grid
+        Aligned-grid direct R-matrix observable.
+    boundary
+        Compile-time boundary values used to match the direct R-matrix onto the
+        physical S-matrix.
+
+    Returns
+    -------
+    tuple
+        Bound aligned-grid direct S-matrix and phase observables, or ``(None, None)``
+        when no boundary data are available.
+    """
 
     if boundary is None:
         return None, None
@@ -350,10 +382,69 @@ def bind_direct_grid_observables(
 def bind_interpolators(
     energies: jax.Array,
 ) -> tuple[InterpolatorBuilder, InterpolatorBuilder, InterpolatorBuilder]:
-    """Bind Padé interpolation builders to one compile-time energy grid."""
+    """Bind Padé interpolation builders to one compile-time energy grid.
+
+    A single builder type serves the R-matrix, S-matrix, and phase-shift
+    interpolation paths; the three returned values are aliases kept for public API
+    clarity on the ``Solver`` bundle.
+    """
 
     builder = _InterpolatorBuilder(energies=energies)
     return builder, builder, builder
+
+
+def _matching_observables(
+    *,
+    energies: jax.Array,
+    boundary: BoundaryValues | None,
+    channel_radius: float,
+    mass_factor: float,
+) -> tuple[SpectrumObservable | None, SpectrumObservable | None]:
+    """Create matching-dependent observables when boundary data are available."""
+
+    if boundary is None:
+        return None, None
+    return (
+        _SMatrixObservable(
+            energies=energies,
+            boundary=boundary,
+            channel_radius=channel_radius,
+            mass_factor=mass_factor,
+        ),
+        _PhasesObservable(
+            energies=energies,
+            boundary=boundary,
+            channel_radius=channel_radius,
+            mass_factor=mass_factor,
+        ),
+    )
+
+
+def _matching_grid_observables(
+    *,
+    energies: jax.Array,
+    boundary: BoundaryValues | None,
+    channel_radius: float,
+    mass_factor: float,
+) -> tuple[SpectrumGridObservable | None, SpectrumGridObservable | None]:
+    """Create aligned-grid matching observables when boundary data are available."""
+
+    if boundary is None:
+        return None, None
+    return (
+        _SMatrixGridObservable(
+            energies=energies,
+            boundary=boundary,
+            channel_radius=channel_radius,
+            mass_factor=mass_factor,
+        ),
+        _PhasesGridObservable(
+            energies=energies,
+            boundary=boundary,
+            channel_radius=channel_radius,
+            mass_factor=mass_factor,
+        ),
+    )
 
 
 def _rmatrix(
@@ -381,6 +472,8 @@ def _smatrix(
 ) -> jax.Array:
     """Return the compile-time energy-grid S-matrix."""
 
+    wave_numbers = _boundary_wave_numbers(boundary)
+
     def one_energy(
         energy: jax.Array,
         h_plus: jax.Array,
@@ -391,7 +484,7 @@ def _smatrix(
         k: jax.Array,
     ) -> jax.Array:
         r = _rmatrix(spectrum, energy, channel_radius, mass_factor)
-        return _match_rmatrix(r, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
+        return _match_one_energy(r, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
 
     result: jax.Array = jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
         energies,
@@ -400,7 +493,7 @@ def _smatrix(
         boundary.H_plus_p,
         boundary.H_minus_p,
         boundary.is_open,
-        boundary.k,
+        wave_numbers,
     )
     return result
 
@@ -473,6 +566,8 @@ def _smatrix_grid(
 ) -> jax.Array:
     """Return aligned-grid `S(E_i; spec_i)` samples."""
 
+    wave_numbers = _boundary_wave_numbers(boundary)
+
     def one_energy(
         spectrum: Spectrum,
         energy: jax.Array,
@@ -484,7 +579,7 @@ def _smatrix_grid(
         k: jax.Array,
     ) -> jax.Array:
         r = _rmatrix(spectrum, energy, channel_radius, mass_factor)
-        return _match_rmatrix(r, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
+        return _match_one_energy(r, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
 
     return jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
         spectra,
@@ -494,7 +589,7 @@ def _smatrix_grid(
         boundary.H_plus_p,
         boundary.H_minus_p,
         boundary.is_open,
-        boundary.k,
+        wave_numbers,
     )
 
 
@@ -515,6 +610,8 @@ def _phases_grid(
 def _direct_smatrix_grid(rmatrix_grid: jax.Array, boundary: BoundaryValues) -> jax.Array:
     """Return aligned-grid `S(E_i; V_i)` samples from direct R-matrices."""
 
+    wave_numbers = _boundary_wave_numbers(boundary)
+
     def one_energy(
         rmatrix: jax.Array,
         h_plus: jax.Array,
@@ -524,7 +621,7 @@ def _direct_smatrix_grid(rmatrix_grid: jax.Array, boundary: BoundaryValues) -> j
         is_open: jax.Array,
         k: jax.Array,
     ) -> jax.Array:
-        return _match_rmatrix(rmatrix, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
+        return _match_one_energy(rmatrix, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
 
     return jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
         rmatrix_grid,
@@ -533,7 +630,7 @@ def _direct_smatrix_grid(rmatrix_grid: jax.Array, boundary: BoundaryValues) -> j
         boundary.H_plus_p,
         boundary.H_minus_p,
         boundary.is_open,
-        boundary.k,
+        wave_numbers,
     )
 
 
@@ -631,6 +728,20 @@ def _match_rmatrix(
     return smatrix_from_R(projected_r, boundary_slice)
 
 
+def _match_one_energy(
+    rmatrix: jax.Array,
+    h_plus: jax.Array,
+    h_minus: jax.Array,
+    h_plus_p: jax.Array,
+    h_minus_p: jax.Array,
+    is_open: jax.Array,
+    k: jax.Array,
+) -> jax.Array:
+    """Match one energy sample after the caller has supplied a concrete ``k`` array."""
+
+    return _match_rmatrix(rmatrix, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
+
+
 def _project_open_channels(
     rmatrix: jax.Array,
     h_plus: jax.Array,
@@ -683,6 +794,17 @@ def _closed_channel_bloch(
         closed_mask,
         ratio,
         zeros,
+    )
+
+
+def _boundary_wave_numbers(boundary: BoundaryValues) -> jax.Array:
+    """Return concrete wave numbers for matching, defaulting closed tests to one."""
+
+    if boundary.k is not None:
+        return boundary.k
+    return jnp.ones_like(  # pyright: ignore[reportUnknownMemberType] -- JAX ones_like stubs are imprecise.
+        boundary.is_open,
+        dtype=jnp.float64,
     )
 
 

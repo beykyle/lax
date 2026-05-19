@@ -5,13 +5,9 @@ import numpy as np
 import pytest
 
 import lax as lm
-from lax._descouvemont_utils import np_j1_channels, reid_np_j1_potential
 from lax.boundary import BoundaryValues
-from tests.benchmarks._descouvemont_cases import (
-    NP_J1_REFERENCE_A7_N60_NS1,
-    NP_J1_REFERENCES,
-    NpJ1Reference,
-)
+from lax.models import reid_np_j1_channels, reid_np_j1_potential
+from tests.benchmarks._descouvemont_fixtures import NpJ1Reference, load_np_j1_references
 
 pytest.importorskip("jax")
 
@@ -27,7 +23,7 @@ def _solver(reference: NpJ1Reference, method: str, solvers: tuple[str, ...]) -> 
             scale=reference.scale,
             extras={"n_intervals": reference.n_intervals},
         ),
-        channels=np_j1_channels(),
+        channels=reid_np_j1_channels(),
         operators=("T+L", "1/r^2"),
         solvers=solvers,
         energies=reference.energies,
@@ -39,22 +35,31 @@ def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential: jax.Array) -> np.
     """Evaluate the collision matrix from the direct R-matrix kernel."""
 
     assert solver.rmatrix_direct is not None
-    assert solver.boundary is not None
 
     r_values = solver.rmatrix_direct(potential)
     smatrices = []
     for energy_index in range(r_values.shape[0]):
-        boundary = BoundaryValues(
-            H_plus=solver.boundary.H_plus[energy_index],
-            H_minus=solver.boundary.H_minus[energy_index],
-            H_plus_p=solver.boundary.H_plus_p[energy_index],
-            H_minus_p=solver.boundary.H_minus_p[energy_index],
-            is_open=solver.boundary.is_open[energy_index],
-            k=solver.boundary.k[energy_index],
+        smatrix = lm.spectral.open_channel_smatrix_from_R(
+            r_values[energy_index],
+            _boundary_at_energy(solver, energy_index),
         )
-        smatrix = lm.spectral.smatrix_from_R(r_values[energy_index], boundary)
         smatrices.append(np.asarray(smatrix))
     return np.stack(smatrices)
+
+
+def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
+    """Return the boundary-value slice for one compile-time energy."""
+
+    assert solver.boundary is not None
+    k_values = None if solver.boundary.k is None else solver.boundary.k[energy_index]
+    return BoundaryValues(
+        H_plus=solver.boundary.H_plus[energy_index],
+        H_minus=solver.boundary.H_minus[energy_index],
+        H_plus_p=solver.boundary.H_plus_p[energy_index],
+        H_minus_p=solver.boundary.H_minus_p[energy_index],
+        is_open=solver.boundary.is_open[energy_index],
+        k=k_values,
+    )
 
 
 def _paper_observables(smatrices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -84,7 +89,7 @@ def _paper_observables_from_direct(
 @pytest.mark.benchmark
 @pytest.mark.parametrize(
     "reference",
-    NP_J1_REFERENCES,
+    load_np_j1_references(),
     ids=["a7-n60-ns1", "a7-n30-ns2", "a8-n25-ns3"],
 )
 def test_descouvemont_np_matches_appendix_b(reference: NpJ1Reference) -> None:
@@ -99,7 +104,7 @@ def test_descouvemont_np_matches_appendix_b(reference: NpJ1Reference) -> None:
 @pytest.mark.benchmark
 @pytest.mark.parametrize(
     "reference",
-    NP_J1_REFERENCES,
+    load_np_j1_references(),
     ids=["a7-n60-ns1", "a7-n30-ns2", "a8-n25-ns3"],
 )
 def test_descouvemont_np_eta12_matches_appendix_b(reference: NpJ1Reference) -> None:
@@ -114,7 +119,7 @@ def test_descouvemont_np_eta12_matches_appendix_b(reference: NpJ1Reference) -> N
 def test_descouvemont_np_spectral_and_direct_paths_agree() -> None:
     """The n-p spectral and direct coupled-channel paths agree."""
 
-    reference = NP_J1_REFERENCE_A7_N60_NS1
+    reference = load_np_j1_references()[0]
     spectral_solver = _solver(reference, "eigh", ("spectrum", "smatrix"))
     direct_solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
     spectral_potential = lm.assemble_local(spectral_solver.mesh, reid_np_j1_potential, n_channels=2)

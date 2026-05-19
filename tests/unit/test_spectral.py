@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 import lax as lm
-from lax._descouvemont_utils import np_j1_channels, reid_np_j1_potential
 from lax.boundary._types import BoundaryValues
+from lax.models import reid_np_j1_channels, reid_np_j1_potential
 from lax.spectral import (
     Spectrum,
     coupled_channel_parameters_from_S,
@@ -133,7 +133,7 @@ def test_smatrix_from_R_is_symmetric_and_unitary_for_real_two_channel_r() -> Non
     energy = np.array([12.0], dtype=np.float64)
     solver = lm.compile(
         mesh=lm.MeshSpec("legendre", "x", n=20, scale=7.0),
-        channels=np_j1_channels(),
+        channels=reid_np_j1_channels(),
         operators=("T+L", "1/r^2"),
         solvers=("spectrum", "rmatrix"),
         energies=energy,

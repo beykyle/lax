@@ -5,18 +5,18 @@ import numpy as np
 import pytest
 
 import lax as lm
-from lax._descouvemont_utils import (
-    alpha_c12_channels,
-    alpha_c12_open_channel_count,
-    alpha_c12_potential,
-    first_column_amplitudes_and_phases,
-)
 from lax.boundary import BoundaryValues
-from lax.solvers.observables import _decouple_closed_channels, _project_open_channels
-from tests.benchmarks._descouvemont_cases import (
-    ALPHA_C12_NOTEBOOK_A11_FULL,
-    ALPHA_C12_REFERENCES,
+from lax.models import (
+    ALPHA_C12_ROTOR_MODEL,
+    channels_from_rotor_model,
+    first_column_amplitudes_and_phases,
+    make_rotor_coupled_optical_potential,
+    open_channel_count,
+)
+from tests.benchmarks._descouvemont_fixtures import (
     CoupledColumnReference,
+    load_alpha_c12_references,
+    load_alpha_c12_single_interval_demo,
 )
 
 pytest.importorskip("jax")
@@ -33,7 +33,7 @@ def _solver(reference: CoupledColumnReference, method: str, solvers: tuple[str, 
             scale=reference.scale,
             extras={"n_intervals": reference.n_intervals},
         ),
-        channels=alpha_c12_channels(),
+        channels=channels_from_rotor_model(ALPHA_C12_ROTOR_MODEL),
         operators=("T+L", "1/r^2"),
         solvers=solvers,
         energies=reference.energies,
@@ -49,48 +49,41 @@ def _smatrix_from_direct_rmatrix(
     """Evaluate the physical open-channel S-matrices from the direct R-matrix kernel."""
 
     assert solver.rmatrix_direct is not None
-    assert solver.boundary is not None
 
     r_values = solver.rmatrix_direct(potential)
     smatrices: list[np.ndarray] = []
     projected_boundaries: list[np.ndarray] = []
     for energy_index in range(r_values.shape[0]):
-        decoupled_r = _decouple_closed_channels(
+        boundary = _boundary_at_energy(solver, energy_index)
+        smatrix = lm.spectral.open_channel_smatrix_from_R(
             r_values[energy_index],
-            solver.boundary.H_plus[energy_index],
-            solver.boundary.H_plus_p[energy_index],
-            solver.boundary.is_open[energy_index],
+            boundary,
         )
-        projected_r, projected_boundary = _project_open_channels(
-            decoupled_r,
-            solver.boundary.H_plus[energy_index],
-            solver.boundary.H_minus[energy_index],
-            solver.boundary.H_plus_p[energy_index],
-            solver.boundary.H_minus_p[energy_index],
-            solver.boundary.is_open[energy_index],
-            solver.boundary.k[energy_index],
-        )
-        smatrix = lm.spectral.smatrix_from_R(
-            projected_r,
-            BoundaryValues(
-                H_plus=projected_boundary.H_plus,
-                H_minus=projected_boundary.H_minus,
-                H_plus_p=projected_boundary.H_plus_p,
-                H_minus_p=projected_boundary.H_minus_p,
-                is_open=projected_boundary.is_open,
-                k=projected_boundary.k,
-            ),
-        )
-        open_count = alpha_c12_open_channel_count(float(solver.energies[energy_index]))
+        open_count = open_channel_count(ALPHA_C12_ROTOR_MODEL, float(solver.energies[energy_index]))
         smatrices.append(np.asarray(smatrix)[:open_count, :open_count])
-        projected_boundaries.append(np.asarray(projected_boundary.is_open))
+        projected_boundaries.append(np.asarray(boundary.is_open))
     return tuple(smatrices), tuple(projected_boundaries)
+
+
+def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
+    """Return the boundary-value slice for one compile-time energy."""
+
+    assert solver.boundary is not None
+    k_values = None if solver.boundary.k is None else solver.boundary.k[energy_index]
+    return BoundaryValues(
+        H_plus=solver.boundary.H_plus[energy_index],
+        H_minus=solver.boundary.H_minus[energy_index],
+        H_plus_p=solver.boundary.H_plus_p[energy_index],
+        H_minus_p=solver.boundary.H_minus_p[energy_index],
+        is_open=solver.boundary.is_open[energy_index],
+        k=k_values,
+    )
 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize(
     "reference",
-    ALPHA_C12_REFERENCES,
+    load_alpha_c12_references(),
     ids=["a9-n25-ns4", "a10-n25-ns4", "a11-n20-ns4"],
 )
 def test_descouvemont_closed_channel_matches_published_first_column(
@@ -98,14 +91,17 @@ def test_descouvemont_closed_channel_matches_published_first_column(
 ) -> None:
     """Published Descouvemont Example 4 values remain visible in the suite."""
 
+    potential = make_rotor_coupled_optical_potential(ALPHA_C12_ROTOR_MODEL)
     solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
-    potential = lm.assemble_local(
-        solver.mesh, alpha_c12_potential, n_channels=len(alpha_c12_channels())
+    assembled_potential = lm.assemble_local(
+        solver.mesh,
+        potential,
+        n_channels=len(channels_from_rotor_model(ALPHA_C12_ROTOR_MODEL)),
     )
-    smatrices, projected_boundaries = _smatrix_from_direct_rmatrix(solver, potential)
+    smatrices, projected_boundaries = _smatrix_from_direct_rmatrix(solver, assembled_potential)
 
     for energy_index, energy in enumerate(reference.energies):
-        open_count = alpha_c12_open_channel_count(float(energy))
+        open_count = open_channel_count(ALPHA_C12_ROTOR_MODEL, float(energy))
         amplitudes, phases = first_column_amplitudes_and_phases(smatrices[energy_index], open_count)
         amplitudes_match = np.allclose(
             amplitudes,
@@ -134,17 +130,18 @@ def test_descouvemont_closed_channel_matches_published_first_column(
 def test_descouvemont_closed_channel_demo_matches_full_precision_reference() -> None:
     """The single-interval notebook regression stays locked to the checked-in full-precision output."""
 
-    reference = ALPHA_C12_NOTEBOOK_A11_FULL
+    reference = load_alpha_c12_single_interval_demo()
+    potential = make_rotor_coupled_optical_potential(ALPHA_C12_ROTOR_MODEL)
     solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
-    potential = lm.assemble_local(
+    assembled_potential = lm.assemble_local(
         solver.mesh,
-        alpha_c12_potential,
-        n_channels=len(alpha_c12_channels()),
+        potential,
+        n_channels=len(channels_from_rotor_model(ALPHA_C12_ROTOR_MODEL)),
     )
-    smatrices, _ = _smatrix_from_direct_rmatrix(solver, potential)
+    smatrices, _ = _smatrix_from_direct_rmatrix(solver, assembled_potential)
 
     for energy_index, energy in enumerate(reference.energies):
-        open_count = alpha_c12_open_channel_count(float(energy))
+        open_count = open_channel_count(ALPHA_C12_ROTOR_MODEL, float(energy))
         amplitudes, phases = first_column_amplitudes_and_phases(smatrices[energy_index], open_count)
         amplitudes_match = np.allclose(
             amplitudes,
@@ -169,7 +166,8 @@ def test_descouvemont_closed_channel_reduced_spectral_and_direct_paths_agree() -
     """A reduced α + 12C setup agrees across the spectral and direct complex paths."""
 
     energies = np.asarray([4.0, 8.0], dtype=np.float64)
-    channels = alpha_c12_channels()
+    channels = channels_from_rotor_model(ALPHA_C12_ROTOR_MODEL)
+    potential = make_rotor_coupled_optical_potential(ALPHA_C12_ROTOR_MODEL)
     spectral_solver = lm.compile(
         mesh=lm.MeshSpec("legendre", "x", n=20, scale=11.0),
         channels=channels,
@@ -192,12 +190,12 @@ def test_descouvemont_closed_channel_reduced_spectral_and_direct_paths_agree() -
     )
     spectral_potential = lm.assemble_local(
         spectral_solver.mesh,
-        alpha_c12_potential,
+        potential,
         n_channels=len(channels),
     )
     direct_potential = lm.assemble_local(
         direct_solver.mesh,
-        alpha_c12_potential,
+        potential,
         n_channels=len(channels),
     )
 
@@ -209,7 +207,7 @@ def test_descouvemont_closed_channel_reduced_spectral_and_direct_paths_agree() -
     )
     direct_smatrices, _ = _smatrix_from_direct_rmatrix(direct_solver, direct_potential)
     for energy_index, energy in enumerate(energies):
-        open_count = alpha_c12_open_channel_count(float(energy))
+        open_count = open_channel_count(ALPHA_C12_ROTOR_MODEL, float(energy))
         assert np.allclose(
             spectral_smatrices[energy_index, :open_count, :open_count],
             direct_smatrices[energy_index],

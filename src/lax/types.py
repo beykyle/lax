@@ -1,4 +1,4 @@
-"""Public type aliases and user-facing specifications. See DESIGN.md §6."""
+"""Public type aliases and user-facing specifications. See ``DESIGN.md §6``."""
 
 from __future__ import annotations
 
@@ -30,7 +30,24 @@ def _empty_extras() -> dict[str, object]:
 
 @dataclass(frozen=True)
 class MeshSpec:
-    """User-facing mesh specification passed to :func:`lax.compile`."""
+    """User-facing mesh specification passed to :func:`lax.compile`.
+
+    Attributes
+    ----------
+    family
+        Mesh family registered in :mod:`lax.meshes`.
+    regularization
+        Endpoint regularization used by the chosen family.
+    n
+        Number of mesh basis functions.
+    scale
+        Physical length scale for the mesh. For finite-interval meshes this is
+        the channel radius; for semi-infinite meshes it is the radial scaling
+        factor described in ``DESIGN.md``.
+    extras
+        Mesh-specific compile-time options forwarded to the registered mesh
+        builder.
+    """
 
     family: MeshFamily
     regularization: Regularization
@@ -41,7 +58,18 @@ class MeshSpec:
 
 @dataclass(frozen=True)
 class ChannelSpec:
-    """One scattering channel baked into the compiled solver structure."""
+    """One scattering channel baked into the compiled solver structure.
+
+    Attributes
+    ----------
+    l
+        Orbital angular momentum for the channel.
+    threshold
+        Channel threshold in MeV. Assembly code converts it to fm^-2 using
+        ``mass_factor``.
+    mass_factor
+        Conversion factor ``ℏ² / 2μ`` in MeV fm².
+    """
 
     l: int
     threshold: float

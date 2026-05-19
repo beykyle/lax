@@ -7,7 +7,7 @@ import pytest
 
 import lax as lm
 from lax.boundary import BoundaryValues
-from tests.benchmarks._descouvemont_cases import (
+from tests.benchmarks._reference_cases import (
     ALPHA_PB_REFERENCE_A14_N60_NS1,
     ALPHA_PB_REFERENCES,
     SingleChannelCollisionReference,
@@ -72,22 +72,31 @@ def _smatrix_from_direct_rmatrix(solver, potential: jax.Array) -> np.ndarray:
     """Evaluate the collision matrix from the direct R-matrix kernel."""
 
     assert solver.rmatrix_direct is not None
-    assert solver.boundary is not None
 
     r_values = solver.rmatrix_direct(potential)
     smatrices = []
     for energy_index in range(r_values.shape[0]):
-        boundary = BoundaryValues(
-            H_plus=solver.boundary.H_plus[energy_index],
-            H_minus=solver.boundary.H_minus[energy_index],
-            H_plus_p=solver.boundary.H_plus_p[energy_index],
-            H_minus_p=solver.boundary.H_minus_p[energy_index],
-            is_open=solver.boundary.is_open[energy_index],
-            k=solver.boundary.k[energy_index],
+        smatrix = lm.spectral.open_channel_smatrix_from_R(
+            r_values[energy_index],
+            _boundary_at_energy(solver, energy_index),
         )
-        smatrix = lm.spectral.smatrix_from_R(r_values[energy_index], boundary)
         smatrices.append(np.asarray(smatrix))
     return np.stack(smatrices)
+
+
+def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
+    """Return the boundary-value slice for one compile-time energy."""
+
+    assert solver.boundary is not None
+    k_values = None if solver.boundary.k is None else solver.boundary.k[energy_index]
+    return BoundaryValues(
+        H_plus=solver.boundary.H_plus[energy_index],
+        H_minus=solver.boundary.H_minus[energy_index],
+        H_plus_p=solver.boundary.H_plus_p[energy_index],
+        H_minus_p=solver.boundary.H_minus_p[energy_index],
+        is_open=solver.boundary.is_open[energy_index],
+        k=k_values,
+    )
 
 
 @pytest.mark.benchmark

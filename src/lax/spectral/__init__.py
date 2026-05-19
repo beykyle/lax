@@ -4,6 +4,7 @@ from lax.spectral.interpolation import pade_interpolate
 from lax.spectral.matching import (
     CoupledChannelParameters,
     coupled_channel_parameters_from_S,
+    open_channel_smatrix_from_R,
     phases_from_S,
     smatrix_from_R,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "CoupledChannelParameters",
     "coupled_channel_parameters_from_S",
     "greens_from_spectrum",
+    "open_channel_smatrix_from_R",
     "pade_interpolate",
     "phases_from_S",
     "rmatrix_from_spectrum",
