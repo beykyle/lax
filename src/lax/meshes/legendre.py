@@ -22,7 +22,11 @@ def build_legendre_x(
 ) -> tuple[Mesh, OperatorMatrices]:
     """Build shifted Legendre-x mesh data. [Desc. eqs. 22-24]"""
 
-    n_intervals = int(extras.pop("n_intervals", 1))
+    raw_n_intervals = extras.pop("n_intervals", 1)
+    if not isinstance(raw_n_intervals, int):
+        msg = "`n_intervals` must be an integer."
+        raise TypeError(msg)
+    n_intervals = raw_n_intervals
     if extras:
         msg = f"Unsupported Legendre-x extras: {sorted(extras)}"
         raise ValueError(msg)
@@ -90,6 +94,7 @@ def _build_legendre_x_propagated(
 ) -> tuple[Mesh, OperatorMatrices]:
     """Build the compile-time data needed for propagated shifted Legendre-x solves."""
 
+    _validate_propagated_operator_requests(operators)
     propagation = build_legendre_x_propagation(
         basis_size_per_interval=n,
         n_intervals=n_intervals,
@@ -105,7 +110,10 @@ def _build_legendre_x_propagated(
     weights = jnp.tile(propagation.local_weights, n_intervals)
     boundary = jnp.concatenate(
         [
-            jnp.zeros(n * (n_intervals - 1), dtype=propagation.q2.dtype),
+            jnp.zeros(  # pyright: ignore[reportUnknownMemberType] -- JAX zeros stubs are imprecise.
+                n * (n_intervals - 1),
+                dtype=propagation.q2.dtype,
+            ),
             propagation.q2[-1],
         ]
     )
@@ -132,6 +140,28 @@ def _build_legendre_x_propagated(
         ),
     )
     return mesh, operators_out
+
+
+def _validate_propagated_operator_requests(operators: set[str]) -> None:
+    """Reject operator requests that the propagated Legendre-x path cannot provide.
+
+    The local direct propagation recursion carries its own interval-local kinetic data,
+    so compile-time ``T+L`` requests are accepted as a solver requirement even though no
+    global ``OperatorMatrices.TpL`` is produced for propagated meshes. Position-like
+    diagonal operators remain available on the stitched nodal grid, but derivative and
+    other unsupported operators should fail fast instead of being silently dropped.
+    """
+
+    supported = {"T+L", "TpL", "1/r", "inv_r", "1/r^2", "1/r²", "inv_r2"}
+    unsupported = sorted(operator for operator in operators if operator not in supported)
+    if unsupported:
+        unsupported_display = ", ".join(repr(operator) for operator in unsupported)
+        msg = (
+            "Propagated Legendre-x meshes only support the local direct recursion and "
+            "diagonal position operators. Unsupported propagated operator request(s): "
+            f"{unsupported_display}."
+        )
+        raise ValueError(msg)
 
 
 @register("legendre", "x(1-x)")

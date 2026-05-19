@@ -5,16 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-type MeshFamily = Literal["legendre", "laguerre", "hermite", "jacobi"]
+type MeshFamily = Literal["legendre", "laguerre"]
 type Regularization = Literal[
-    "none",
     "x",
     "x^3/2",
     "x(1-x)",
-    "sqrt(1-x^2)",
     "modified_x^2",
 ]
-type Method = Literal["eigh", "eig", "linear_solve", "lanczos"]
+type Method = Literal["eigh", "eig", "linear_solve"]
 
 # Backward-compatible aliases for internal signatures and existing sketches.
 type MeshFamilyT = MeshFamily
@@ -35,9 +33,14 @@ class MeshSpec:
     Attributes
     ----------
     family
-        Mesh family registered in :mod:`lax.meshes`.
+        Mesh family registered in :mod:`lax.meshes`. The current public API
+        supports ``"legendre"`` and ``"laguerre"``.
     regularization
-        Endpoint regularization used by the chosen family.
+        Endpoint regularization used by the chosen family. The currently
+        supported combinations are:
+
+        - Legendre: ``"x"``, ``"x(1-x)"``, ``"x^3/2"``
+        - Laguerre: ``"x"``, ``"modified_x^2"``
     n
         Number of mesh basis functions.
     scale

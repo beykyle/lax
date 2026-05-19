@@ -157,7 +157,6 @@ def test_yamaguchi_direct_matches_spectral(reference: YamaguchiReference) -> Non
     assert np.allclose(direct_delta, spectral_delta, atol=1.0e-10, rtol=1.0e-10)
 
 
-@pytest.mark.benchmark
 @pytest.mark.parametrize("a,n,E,ref_deg,tol", YAMAGUCHI_ASYMPTOTIC_CASES)
 def test_yamaguchi_large_radius_matches_baye_reference(a, n, E, ref_deg, tol):
     """The large-radius single-channel limit matches the Baye/Hesse reference values."""

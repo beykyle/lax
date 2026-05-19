@@ -7,6 +7,7 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from lax.boundary._types import (
     BoundaryValues,
@@ -161,17 +162,21 @@ def _rmatrix_direct(
 ) -> jax.Array:
     """Return the direct R-matrix across the compile-time energy grid."""
 
-    if mesh.propagation is not None:
+    if mesh.propagation is not None and potential.ndim == 3:
         if boundary is None:
             msg = "Boundary values are required for propagated direct R-matrix solves."
             raise ValueError(msg)
-        if potential.ndim != 3:
-            msg = "Subinterval propagation currently supports only local potentials."
-            raise NotImplementedError(msg)
-        return jax.vmap(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
-            lambda energy, h_plus, h_plus_p, is_open: _propagated_rmatrix_at_energy(
+        propagation = mesh.propagation
+
+        def propagated_one_energy(
+            energy: jax.Array,
+            h_plus: jax.Array,
+            h_plus_p: jax.Array,
+            is_open: jax.Array,
+        ) -> jax.Array:
+            return _propagated_rmatrix_at_energy(
                 potential,
-                mesh.propagation,
+                propagation,
                 channels,
                 energy,
                 h_plus,
@@ -179,14 +184,31 @@ def _rmatrix_direct(
                 is_open,
                 mass_factor,
             )
+
+        result: jax.Array = jax.vmap(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+            propagated_one_energy
         )(
             energies,
             boundary.H_plus,
             boundary.H_plus_p,
             boundary.is_open,
         )
+        return result
 
-    hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
+    if mesh.propagation is not None and potential.ndim == 4:
+        msg = (
+            "Subinterval propagation is defined only for local potentials in the direct "
+            "linear-solve formulation. Non-local propagated solves are not mathematically "
+            "supported."
+        )
+        raise ValueError(msg)
+
+    hamiltonian = assemble_block_hamiltonian(
+        mesh,
+        operators,
+        channels,
+        potential,
+    )
 
     def one_energy(energy: jax.Array) -> jax.Array:
         energy_dimless = energy / mass_factor
@@ -224,17 +246,22 @@ def _rmatrix_direct_grid(
 ) -> jax.Array:
     """Return aligned-grid `R(E_i; V_i)` samples for energy-dependent potentials."""
 
-    if mesh.propagation is not None:
+    if mesh.propagation is not None and potentials.ndim == 4:
         if boundary is None:
             msg = "Boundary values are required for propagated direct R-matrix solves."
             raise ValueError(msg)
-        if potentials.ndim != 4:
-            msg = "Subinterval propagation currently supports only local potentials."
-            raise NotImplementedError(msg)
-        return jax.vmap(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
-            lambda potential, energy, h_plus, h_plus_p, is_open: _propagated_rmatrix_at_energy(
+        propagation = mesh.propagation
+
+        def propagated_one_energy(
+            potential: jax.Array,
+            energy: jax.Array,
+            h_plus: jax.Array,
+            h_plus_p: jax.Array,
+            is_open: jax.Array,
+        ) -> jax.Array:
+            return _propagated_rmatrix_at_energy(
                 potential,
-                mesh.propagation,
+                propagation,
                 channels,
                 energy,
                 h_plus,
@@ -242,6 +269,9 @@ def _rmatrix_direct_grid(
                 is_open,
                 mass_factor,
             )
+
+        result: jax.Array = jax.vmap(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+            propagated_one_energy
         )(
             potentials,
             energies,
@@ -249,9 +279,23 @@ def _rmatrix_direct_grid(
             boundary.H_plus_p,
             boundary.is_open,
         )
+        return result
+
+    if mesh.propagation is not None and potentials.ndim == 5:
+        msg = (
+            "Subinterval propagation is defined only for local potentials in the direct "
+            "linear-solve formulation. Non-local propagated solves are not mathematically "
+            "supported."
+        )
+        raise ValueError(msg)
 
     def one_energy(potential: jax.Array, energy: jax.Array) -> jax.Array:
-        hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
+        hamiltonian = assemble_block_hamiltonian(
+            mesh,
+            operators,
+            channels,
+            potential,
+        )
         energy_dimless = energy / mass_factor
         matrix = hamiltonian - energy_dimless * jnp.eye(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
             matrix_size,
@@ -302,10 +346,12 @@ def _propagated_rmatrix_at_energy(
         jnp.zeros_like(h_plus, dtype=dtype),  # pyright: ignore[reportUnknownMemberType] -- JAX zeros_like stubs are imprecise.
         (h_plus_p / h_plus).astype(dtype),
     )
-    qk_sq = jnp.asarray(
-        [jnp.abs((energy - channel.threshold) / mass_factor) for channel in channels],
+    thresholds = np.asarray([channel.threshold for channel in channels], dtype=np.float64)
+    threshold_array: jax.Array = jnp.asarray(  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+        thresholds,
         dtype=dtype,
     )
+    qk_sq = jnp.abs((energy - threshold_array) / mass_factor)
 
     crma0 = jnp.zeros((channel_count, channel_count), dtype=dtype)  # pyright: ignore[reportUnknownMemberType] -- JAX zeros stubs are imprecise.
     for interval_index in range(ns):
@@ -319,9 +365,8 @@ def _propagated_rmatrix_at_energy(
         if interval_index == 0:
             boundary_block = blo0 / ((interval_index + 1) * interval_width)
         else:
-            boundary_block = (
-                blo2 / ((interval_index + 1) * interval_width)
-                - blo1 / (interval_index * interval_width)
+            boundary_block = blo2 / ((interval_index + 1) * interval_width) - blo1 / (
+                interval_index * interval_width
             )
         for channel_index, channel in enumerate(channels):
             row = channel_index * nr

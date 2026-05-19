@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import lax as lm
+from lax.meshes import build_mesh
 from lax.solvers import assemble_block_hamiltonian, build_Q, make_rmatrix_direct_kernel
 
 pytest.importorskip("jax")
@@ -89,6 +90,56 @@ def test_compile_rejects_linear_solve_for_spectrum_path() -> None:
         )
 
 
+def test_compile_rejects_propagated_spectrum_path() -> None:
+    """Propagated meshes remain a direct-only feature under the Phase 9 design."""
+
+    with pytest.raises(ValueError, match="Spectrum-derived observables"):
+        lm.compile(
+            mesh=lm.MeshSpec("legendre", "x", n=4, scale=8.0, extras={"n_intervals": 2}),
+            channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+            solvers=("spectrum",),
+        )
+
+
+def test_compile_rejects_propagated_grid_transforms() -> None:
+    """Propagated meshes still reject grid and momentum transforms explicitly."""
+
+    with pytest.raises(ValueError, match="Radial-grid transforms"):
+        lm.compile(
+            mesh=lm.MeshSpec("legendre", "x", n=4, scale=8.0, extras={"n_intervals": 2}),
+            channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+            solvers=("rmatrix_direct",),
+            energies=jnp.asarray([0.5]),
+            grid=jnp.linspace(0.1, 7.9, 12),
+        )
+
+
+def test_compile_rejects_propagated_momentum_transforms() -> None:
+    """Propagated meshes reject momentum transforms with a mathematical-consistency error."""
+
+    with pytest.raises(ValueError, match="Momentum transforms"):
+        lm.compile(
+            mesh=lm.MeshSpec("legendre", "x", n=4, scale=8.0, extras={"n_intervals": 2}),
+            channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+            solvers=("rmatrix_direct",),
+            energies=jnp.asarray([0.5]),
+            momenta=jnp.linspace(0.1, 2.0, 12),
+        )
+
+
+def test_compile_rejects_propagated_non_linear_solve_method() -> None:
+    """Propagated meshes reject spectral eigensolver methods directly."""
+
+    with pytest.raises(ValueError, match="local direct linear-solve formulation"):
+        lm.compile(
+            mesh=lm.MeshSpec("legendre", "x", n=4, scale=8.0, extras={"n_intervals": 2}),
+            channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+            solvers=("rmatrix_direct",),
+            energies=jnp.asarray([0.5]),
+            method="eigh",
+        )
+
+
 def test_direct_rmatrix_matches_spectral_rmatrix_for_real_potential() -> None:
     """The direct and spectral R-matrix solvers agree for a real non-local potential."""
 
@@ -156,6 +207,38 @@ def test_direct_rmatrix_grid_matches_manual_per_energy_solve() -> None:
         expected.append((q.T @ np.linalg.solve(matrix, q)) / solver.mesh.scale)
 
     assert np.allclose(result, np.stack(expected), atol=1.0e-10, rtol=1.0e-10)
+
+
+def test_assemble_nonlocal_rejects_propagated_mesh() -> None:
+    """Propagated meshes reject non-local kernel assembly explicitly."""
+
+    mesh, _ = build_mesh("legendre", "x", n=4, scale=8.0, operators={"T+L"}, n_intervals=2)
+
+    def nonlocal_kernel(r1: jax.Array, r2: jax.Array) -> jax.Array:
+        return -2.0 * jnp.exp(-0.5 * (r1 + r2))
+
+    with pytest.raises(ValueError, match="Non-local kernels"):
+        lm.assemble_nonlocal(mesh, nonlocal_kernel)
+
+
+def test_propagated_nonlocal_direct_rejects_inconsistent_request() -> None:
+    """Propagated direct solves reject non-local potentials instead of emulating them."""
+
+    propagated_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=4, scale=8.0, extras={"n_intervals": 2}),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=jnp.asarray([0.3, 0.9]),
+        method="linear_solve",
+    )
+
+    potential = jnp.ones((1, 1, 8, 8), dtype=jnp.float64)
+
+    assert propagated_solver.rmatrix_direct is not None
+
+    with pytest.raises(ValueError, match="Non-local propagated solves"):
+        propagated_solver.rmatrix_direct(potential)
 
 
 def test_direct_grid_observables_match_spectral_grid_for_real_energy_dependent_potential() -> None:

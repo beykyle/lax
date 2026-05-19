@@ -178,6 +178,7 @@ def compile(
         mesh=mesh,
         operators=request.operators,
         needs_spectrum=request.needs_spectrum,
+        method=request.method,
         grid=grid,
         momenta=momenta,
     )
@@ -267,6 +268,7 @@ def _build_solver_mesh(
     mesh: MeshSpec,
     operators: frozenset[str],
     needs_spectrum: bool,
+    method: Method,
     grid: jax.Array | None,
     momenta: jax.Array | None,
 ) -> tuple[Mesh, OperatorMatrices]:
@@ -281,11 +283,32 @@ def _build_solver_mesh(
         **mesh.extras,
     )
     if mesh_data.n_intervals > 1 and needs_spectrum:
-        msg = "Subinterval propagation is currently implemented only for the direct linear-solve path."
-        raise NotImplementedError(msg)
-    if mesh_data.n_intervals > 1 and (grid is not None or momenta is not None):
-        msg = "Grid and momentum transforms are not implemented for propagated subinterval meshes."
-        raise NotImplementedError(msg)
+        msg = (
+            "Subinterval propagation is defined only for local potentials on the direct "
+            "linear-solve path. Spectrum-derived observables are not mathematically "
+            "supported for propagated meshes."
+        )
+        raise ValueError(msg)
+    if mesh_data.n_intervals > 1 and grid is not None:
+        msg = (
+            "Subinterval propagation is defined only for local direct linear-solve "
+            "workflows. Radial-grid transforms require a global basis formulation, so "
+            "they are not mathematically supported for propagated meshes."
+        )
+        raise ValueError(msg)
+    if mesh_data.n_intervals > 1 and momenta is not None:
+        msg = (
+            "Subinterval propagation is defined only for local direct linear-solve "
+            "workflows. Momentum transforms require a global basis formulation, so "
+            "they are not mathematically supported for propagated meshes."
+        )
+        raise ValueError(msg)
+    if mesh_data.n_intervals > 1 and method != "linear_solve":
+        msg = (
+            "Subinterval propagation is defined only for the local direct linear-solve "
+            "formulation. Propagated meshes cannot be used with spectral eigensolvers."
+        )
+        raise ValueError(msg)
     return mesh_data, operator_matrices
 
 

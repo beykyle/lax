@@ -148,3 +148,10 @@ def test_build_mesh_rejects_unknown_builder() -> None:
 
     with pytest.raises(ValueError, match="No builder"):
         build_mesh("hermite", "x", n=4, scale=1.0, operators=set())
+
+
+def test_propagated_legendre_x_rejects_unsupported_operator_requests() -> None:
+    """Propagated Legendre-x meshes fail fast on unsupported compile-time operators."""
+
+    with pytest.raises(ValueError, match="Unsupported propagated operator request"):
+        build_legendre_x(n=5, scale=8.0, operators={"D"}, n_intervals=2)

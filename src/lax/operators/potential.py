@@ -39,9 +39,13 @@ def assemble_nonlocal(
 ) -> jax.Array:
     """Assemble a Gauss-scaled non-local potential on the mesh."""
 
-    if mesh.n_intervals != 1:
-        msg = "Non-local potentials are not implemented for propagated subinterval meshes."
-        raise NotImplementedError(msg)
+    if mesh.propagation is not None:
+        msg = (
+            "Subinterval propagation is defined only for local potentials in the direct "
+            "linear-solve formulation. Non-local kernels are not mathematically "
+            "supported on propagated meshes."
+        )
+        raise ValueError(msg)
 
     radii = mesh.radii
     weights = mesh.weights
