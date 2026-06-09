@@ -81,7 +81,7 @@ class ChannelSpec:
 
     l: int
     threshold: float
-    mass_factor: float = 1.0
+    mass_factor: float
 
 
 __all__ = [
