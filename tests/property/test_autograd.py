@@ -26,7 +26,7 @@ _SOLVER = lm.compile(
 
 
 @st.composite
-def _local_gaussian_potential(draw: st.DrawFn) -> jnp.ndarray:
+def _local_gaussian_potential(draw: st.DrawFn) -> jax.Array:
     depth = draw(st.floats(-200.0, -1.0, allow_nan=False, allow_infinity=False))
     width = draw(st.floats(0.5, _SCALE / 2, allow_nan=False, allow_infinity=False))
     r = np.asarray(_SOLVER.mesh.radii)
@@ -37,11 +37,11 @@ def _local_gaussian_potential(draw: st.DrawFn) -> jnp.ndarray:
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
-def test_spectrum_eigenvalues_are_differentiable(V: jnp.ndarray) -> None:
+def test_spectrum_eigenvalues_are_differentiable(V: jax.Array) -> None:
     """jax.grad passes through solver.spectrum for any real local potential."""
     assert _SOLVER.spectrum is not None
 
-    def loss(V: jnp.ndarray) -> jax.Array:
+    def loss(V: jax.Array) -> jax.Array:
         return jnp.sum(_SOLVER.spectrum(V).eigenvalues)
 
     grad = jax.grad(loss)(V)
@@ -51,12 +51,12 @@ def test_spectrum_eigenvalues_are_differentiable(V: jnp.ndarray) -> None:
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
-def test_smatrix_is_differentiable(V: jnp.ndarray) -> None:
+def test_smatrix_is_differentiable(V: jax.Array) -> None:
     """jax.grad passes through the full spectrum → S-matrix pipeline."""
     assert _SOLVER.spectrum is not None
     assert _SOLVER.smatrix is not None
 
-    def loss(V: jnp.ndarray) -> jax.Array:
+    def loss(V: jax.Array) -> jax.Array:
         spec = _SOLVER.spectrum(V)
         return jnp.sum(_SOLVER.smatrix(spec).real)
 

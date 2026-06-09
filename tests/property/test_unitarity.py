@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hypothesis.strategies as st
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -27,7 +28,7 @@ _SOLVER = lm.compile(
 
 
 @st.composite
-def _local_gaussian_potential(draw: st.DrawFn) -> jnp.ndarray:
+def _local_gaussian_potential(draw: st.DrawFn) -> jax.Array:
     depth = draw(st.floats(-200.0, -1.0, allow_nan=False, allow_infinity=False))
     width = draw(st.floats(0.5, _SCALE / 2, allow_nan=False, allow_infinity=False))
     r = np.asarray(_SOLVER.mesh.radii)
@@ -38,7 +39,7 @@ def _local_gaussian_potential(draw: st.DrawFn) -> jnp.ndarray:
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
-def test_smatrix_is_unitary(V: jnp.ndarray) -> None:
+def test_smatrix_is_unitary(V: jax.Array) -> None:
     """S-matrix diagonal elements lie on the unit circle for open channels."""
     assert _SOLVER.smatrix is not None
     assert _SOLVER.spectrum is not None
@@ -56,7 +57,7 @@ def test_smatrix_is_unitary(V: jnp.ndarray) -> None:
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
-def test_smatrix_agrees_with_per_energy_rmatrix_path(V: jnp.ndarray) -> None:
+def test_smatrix_agrees_with_per_energy_rmatrix_path(V: jax.Array) -> None:
     """S reconstructed from the per-energy R-matrix matches the grid S-matrix."""
     assert _SOLVER.spectrum is not None
     assert _SOLVER.rmatrix is not None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hypothesis.strategies as st
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -26,7 +27,7 @@ _SOLVER = lm.compile(
 
 
 @st.composite
-def _local_gaussian_potential(draw: st.DrawFn) -> jnp.ndarray:
+def _local_gaussian_potential(draw: st.DrawFn) -> jax.Array:
     depth = draw(st.floats(-200.0, -1.0, allow_nan=False, allow_infinity=False))
     width = draw(st.floats(0.5, _SCALE / 2, allow_nan=False, allow_infinity=False))
     r = np.asarray(_SOLVER.mesh.radii)
@@ -37,18 +38,16 @@ def _local_gaussian_potential(draw: st.DrawFn) -> jnp.ndarray:
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
-def test_block_hamiltonian_is_real_symmetric(V: jnp.ndarray) -> None:
+def test_block_hamiltonian_is_real_symmetric(V: jax.Array) -> None:
     """Block Hamiltonian H = H^T for any real local potential."""
-    H = np.asarray(
-        assemble_block_hamiltonian(_SOLVER.mesh, _SOLVER.operators, _SOLVER.channels, V)
-    )
+    H = np.asarray(assemble_block_hamiltonian(_SOLVER.mesh, _SOLVER.operators, _SOLVER.channels, V))
     assert np.allclose(H, H.T, atol=1e-10)
 
 
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
-def test_eigenvalues_are_real_for_real_symmetric_potential(V: jnp.ndarray) -> None:
+def test_eigenvalues_are_real_for_real_symmetric_potential(V: jax.Array) -> None:
     """eigh path returns real eigenvalues for a real symmetric Hamiltonian."""
     assert _SOLVER.spectrum is not None
     spectrum = _SOLVER.spectrum(V)
