@@ -20,7 +20,6 @@ build/
 
 # uv / venv
 .venv/
-uv.lock
 
 # JAX / XLA compilation cache
 /jax_cache/
