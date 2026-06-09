@@ -2,8 +2,20 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# pypandoc-binary installs pandoc into pypandoc/files/, not into PATH.
+# nbconvert discovers pandoc via shutil.which(), so we prepend that directory here.
+try:
+    import pypandoc as _pypandoc
+
+    _pandoc_dir = os.path.join(os.path.dirname(os.path.realpath(_pypandoc.__file__)), "files")
+    os.environ["PATH"] = _pandoc_dir + os.pathsep + os.environ.get("PATH", "")
+    del _pypandoc, _pandoc_dir
+except ImportError:
+    pass
 
 # Ensure the installed package is importable (needed for autodoc).
 # When running via `uv run sphinx-build`, lax is already installed in the env.
