@@ -123,6 +123,7 @@ def compile(
     momenta: jax.Array | None = None,
     z1z2: tuple[int, int] | None = None,
     dps: int = 40,
+    mass_factor_grid: jax.Array | None = None,
 ) -> Solver:
     """Build a compiled solver bundle for one mesh/channel definition.
 
@@ -172,6 +173,23 @@ def compile(
         Optional pair of charges passed to compile-time boundary-value evaluation.
     dps
         Decimal precision for the ``mpmath`` boundary-value calculation.
+    mass_factor_grid
+        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``, or ``None``
+        to use the scalar ``ChannelSpec.mass_factor`` uniformly.  When provided,
+        ``len(mass_factor_grid)`` must equal ``len(energies)``.
+
+        This enables problems where the effective reduced mass depends on energy
+        (e.g. relativistic kinematics, energy-dependent folding potentials).
+        The grid is used in three places:
+
+        1. **Boundary values** — wave numbers and Sommerfeld parameters at each
+           compile-time energy use ``mass_factor_grid[i]``.
+        2. **Hamiltonian assembly** — pass ``mass_factor`` to ``solver.spectrum``
+           at runtime: ``jax.vmap(lambda V, mu: solver.spectrum(V, mass_factor=mu))(V_grid, mu_grid)``.
+        3. **Aligned-grid observables** — ``solver.phases_grid``,
+           ``solver.smatrix_grid``, and ``solver.rmatrix_grid`` use the stored
+           grid so the spectral denominator ``ε_k − E_i/μ(E_i)`` is correct at
+           each energy point.
 
     Returns
     -------
@@ -197,18 +215,35 @@ def compile(
         grid=grid,
         momenta=momenta,
     )
+    if mass_factor_grid is not None:
+        if energies is None:
+            msg = "`energies` is required when `mass_factor_grid` is provided."
+            raise ValueError(msg)
+        if len(mass_factor_grid) != len(energies):
+            msg = (
+                f"`mass_factor_grid` length {len(mass_factor_grid)} must equal "
+                f"`energies` length {len(energies)}."
+            )
+            raise ValueError(msg)
+    mass_factor_grid_np = (
+        np.asarray(mass_factor_grid, dtype=np.float64) if mass_factor_grid is not None else None
+    )
     boundary, energies_array = _prepare_boundary_data(
         channels=request.channels,
         energies=energies,
         channel_radius=mesh.scale,
         z1z2=z1z2,
         dps=dps,
+        mass_factor_grid=mass_factor_grid_np,
     )
     transforms = _prepare_transforms(
         mesh=mesh_data,
         channels=request.channels,
         grid=grid,
         momenta=momenta,
+    )
+    mass_factor_grid_jax = (
+        _to_jax_array(mass_factor_grid_np) if mass_factor_grid_np is not None else None
     )
     observables = _bind_solver_observables(
         request=request,
@@ -217,6 +252,7 @@ def compile(
         energies=energies_array,
         boundary=boundary,
         has_energy_grid=energies is not None,
+        mass_factor_grid=mass_factor_grid_jax,
     )
     return _assemble_solver(
         request=request,
@@ -226,6 +262,7 @@ def compile(
         boundary=boundary,
         transforms=transforms,
         observables=observables,
+        mass_factor_grid=mass_factor_grid_jax,
     )
 
 
@@ -334,6 +371,7 @@ def _prepare_boundary_data(
     channel_radius: float,
     z1z2: tuple[int, int] | None,
     dps: int,
+    mass_factor_grid: np.ndarray | None = None,
 ) -> tuple[BoundaryValues | None, jax.Array]:
     """Prepare compile-time boundary values and the canonical energy-grid array."""
 
@@ -350,6 +388,7 @@ def _prepare_boundary_data(
         channel_radius=channel_radius,
         z1z2=z1z2,
         dps=dps,
+        mass_factor_grid=mass_factor_grid,
     )
     return boundary, _to_jax_array(energies_np)
 
@@ -421,6 +460,7 @@ def _bind_solver_observables(
     energies: jax.Array,
     boundary: BoundaryValues | None,
     has_energy_grid: bool,
+    mass_factor_grid: jax.Array | None = None,
 ) -> _ObservableBundle:
     """Bind all runtime entry points requested for one compiled solver."""
 
@@ -470,7 +510,13 @@ def _bind_solver_observables(
                 rmatrix_grid_fn,
                 smatrix_grid_fn,
                 phases_grid_fn,
-            ) = bind_grid_observables(mesh, request.channels, energies, boundary)
+            ) = bind_grid_observables(
+                mesh,
+                request.channels,
+                energies,
+                boundary,
+                mass_factor_grid=mass_factor_grid,
+            )
 
     rmatrix_direct_fn: DirectRMatrixKernel | None = None
     rmatrix_direct_grid_fn: DirectGridObservable | None = None
@@ -491,6 +537,7 @@ def _bind_solver_observables(
                 request.channels,
                 energies,
                 boundary,
+                mass_factor_grid=mass_factor_grid,
             )
             (
                 smatrix_direct_grid_fn,
@@ -537,6 +584,7 @@ def _assemble_solver(
     boundary: BoundaryValues | None,
     transforms: _TransformBundle,
     observables: _ObservableBundle,
+    mass_factor_grid: jax.Array | None = None,
 ) -> Solver:
     """Assemble the final public solver bundle from normalized subcomponents."""
 
@@ -553,6 +601,7 @@ def _assemble_solver(
         boundary=boundary,
         transforms=transforms.matrices,
         method=request.method,
+        mass_factor_grid=mass_factor_grid,
         spectrum=observables.spectrum if expose_spectrum else None,
         rmatrix=observables.rmatrix,
         smatrix=observables.smatrix,

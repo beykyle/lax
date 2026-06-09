@@ -75,6 +75,18 @@ jupyter = [
     "nbformat>=5.10",
 ]
 
+# Sphinx documentation build.  Install with: uv sync --group docs
+# The lax[cpu] entry installs JAX so autodoc can import the package.
+docs = [
+    "lax[cpu]",
+    "sphinx>=8.0",
+    "furo>=2024.1.29",
+    "nbsphinx>=0.9",
+    "ipykernel>=6.29",
+    "sphinx-copybutton>=0.5",
+    "pypandoc-binary>=1.13",  # bundles the pandoc binary; required by nbsphinx
+]
+
 # ── Build ────────────────────────────────────────────────────────────────────
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]

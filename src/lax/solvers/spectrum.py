@@ -27,8 +27,33 @@ class _SpectrumKernel:
     method: Method
     keep_eigenvectors: bool
 
-    def __call__(self, potential: jax.Array) -> Spectrum:
-        """Return the spectral decomposition for one assembled potential."""
+    def __call__(
+        self,
+        potential: jax.Array,
+        mass_factor: float | jax.Array | None = None,
+    ) -> Spectrum:
+        """Return the spectral decomposition for one assembled potential.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential array, shape ``(N_c, N_c, N)`` for local or
+            ``(N_c, N_c, N, N)`` for non-local.
+        mass_factor
+            Optional energy-dependent ℏ²/2μ value in MeV·fm².  When provided,
+            overrides ``ChannelSpec.mass_factor`` in the Hamiltonian assembly so
+            that ``threshold/μ(E)`` and ``V/μ(E)`` use the correct per-energy
+            value.  Typical usage::
+
+                spectra = jax.vmap(
+                    lambda V, mu: solver.spectrum(V, mass_factor=mu)
+                )(V_grid, mu_grid)
+
+        Returns
+        -------
+        Spectrum
+            Eigendecomposition of the Bloch-augmented Hamiltonian.
+        """
 
         if self.method == "eigh":
             return cast(
@@ -40,6 +65,7 @@ class _SpectrumKernel:
                     self.channels,
                     self.q,
                     self.keep_eigenvectors,
+                    mass_factor,
                 ),
             )
         if self.method == "eig":
@@ -52,6 +78,7 @@ class _SpectrumKernel:
                     self.channels,
                     self.q,
                     self.keep_eigenvectors,
+                    mass_factor,
                 ),
             )
         msg = f"Method {self.method!r} is not implemented in the MVP spectrum kernel."
@@ -113,10 +140,13 @@ def _spectrum_eigh(
     channels: tuple[ChannelSpec, ...],
     q: jax.Array,
     keep_eigenvectors: bool,
+    mass_factor_override: float | jax.Array | None,
 ) -> Spectrum:
     """Return the Hermitian spectrum for one potential."""
 
-    hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
+    hamiltonian = assemble_block_hamiltonian(
+        mesh, operators, channels, potential, mass_factor_override
+    )
     eigensystem = cast(
         tuple[jax.Array, jax.Array],
         jnp.linalg.eigh(hamiltonian),
@@ -138,10 +168,13 @@ def _spectrum_eig(
     channels: tuple[ChannelSpec, ...],
     q: jax.Array,
     keep_eigenvectors: bool,
+    mass_factor_override: float | jax.Array | None,
 ) -> Spectrum:
     """Return the complex-symmetric spectrum for one potential."""
 
-    hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
+    hamiltonian = assemble_block_hamiltonian(
+        mesh, operators, channels, potential, mass_factor_override
+    )
     eigenvalues, eigenvectors = _eig_via_callback(hamiltonian)
     bilinear_norm = jnp.sqrt(jnp.diag(eigenvectors.T @ eigenvectors))
     eigenvectors_normalized = eigenvectors / bilinear_norm[None, :]

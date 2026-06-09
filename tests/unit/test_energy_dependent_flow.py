@@ -174,3 +174,102 @@ def test_energy_dependent_pade_flow_matches_dense_grid() -> None:
     assert np.allclose(
         np.asarray(recovered_phase_knots), np.asarray(sparse_phases), atol=1.0e-10, rtol=1.0e-10
     )
+
+
+def test_constant_mass_factor_grid_reproduces_scalar_result() -> None:
+    """A uniform mass_factor_grid produces bit-identical results to scalar mass_factor."""
+
+    energies = jnp.linspace(0.2, 2.0, 11)
+    mu_scalar = HBAR2_2MU
+
+    # Solver compiled with scalar mass_factor (no grid)
+    scalar_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=12, scale=8.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=mu_scalar),),
+        solvers=("spectrum", "smatrix", "phases"),
+        energies=energies,
+        energy_dependent=True,
+    )
+
+    # Solver compiled with constant mass_factor_grid = [mu, mu, ..., mu]
+    mu_grid = jnp.full(len(energies), mu_scalar)
+    grid_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=12, scale=8.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=mu_scalar),),
+        solvers=("spectrum", "smatrix", "phases"),
+        energies=energies,
+        energy_dependent=True,
+        mass_factor_grid=mu_grid,
+    )
+
+    potentials = jax.vmap(lambda e: _make_potential(scalar_solver, e))(energies)
+
+    assert scalar_solver.spectrum is not None
+    assert grid_solver.spectrum is not None
+    assert scalar_solver.smatrix_grid is not None
+    assert grid_solver.smatrix_grid is not None
+
+    # Scalar path: spectrum uses ChannelSpec.mass_factor
+    scalar_spectra = jax.vmap(scalar_solver.spectrum)(potentials)
+    scalar_phases = scalar_solver.phases_grid(scalar_spectra)
+
+    # Grid path: spectrum uses mass_factor=mu_i (constant, same value)
+    grid_spectra = jax.vmap(lambda V, mu: grid_solver.spectrum(V, mass_factor=mu))(
+        potentials, mu_grid
+    )
+    grid_phases = grid_solver.phases_grid(grid_spectra)
+
+    assert np.allclose(
+        np.asarray(scalar_phases), np.asarray(grid_phases), atol=1.0e-10, rtol=1.0e-10
+    ), "Constant mu_grid must reproduce scalar mass_factor result"
+
+
+def test_varying_mass_factor_grid_changes_phases() -> None:
+    """A non-trivial mu(E) produces different phases from constant mu."""
+
+    energies = jnp.linspace(0.5, 3.0, 10)
+    mu_base = HBAR2_2MU
+    alpha = 0.05  # 5% variation over the energy range
+
+    # Constant-mu solver
+    const_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=12, scale=8.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=mu_base),),
+        solvers=("spectrum", "phases"),
+        energies=energies,
+        energy_dependent=True,
+    )
+
+    # Energy-dependent-mu solver: mu(E) = mu_base * (1 + alpha * E)
+    mu_grid = mu_base * (1.0 + alpha * energies)
+    mu_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=12, scale=8.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=mu_base),),
+        solvers=("spectrum", "phases"),
+        energies=energies,
+        energy_dependent=True,
+        mass_factor_grid=mu_grid,
+    )
+
+    potentials = jax.vmap(lambda e: _make_potential(const_solver, e))(energies)
+    mu_grid_np = np.asarray(mu_grid)
+
+    assert const_solver.spectrum is not None
+    assert mu_solver.spectrum is not None
+    assert const_solver.phases_grid is not None
+    assert mu_solver.phases_grid is not None
+
+    const_spectra = jax.vmap(const_solver.spectrum)(potentials)
+    const_phases = const_solver.phases_grid(const_spectra)
+
+    mu_spectra = jax.vmap(lambda V, mu: mu_solver.spectrum(V, mass_factor=mu))(potentials, mu_grid)
+    mu_phases = mu_solver.phases_grid(mu_spectra)
+
+    # Phases must differ — the energy-dependent mu changes both the Hamiltonian
+    # (threshold/mu, V/mu terms) and the spectral denominator (E/mu).
+    assert not np.allclose(np.asarray(const_phases), np.asarray(mu_phases), atol=1e-6), (
+        "Varying mu(E) should produce different phases from constant mu"
+    )
+    # But neither result should be NaN
+    assert np.all(np.isfinite(np.asarray(mu_phases))), "mu(E) phases must be finite"
+    _ = mu_grid_np  # used in construction, checked above

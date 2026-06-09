@@ -2,6 +2,9 @@
 ./theory/*
 ./prototype/*
 
+# docs build
+/docs/_build/
+
 # .ipynb_checkpoints
 */.ipynb_checkpoints/*
 
@@ -17,7 +20,6 @@ build/
 
 # uv / venv
 .venv/
-uv.lock
 
 # JAX / XLA compilation cache
 /jax_cache/
