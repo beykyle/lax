@@ -205,6 +205,63 @@ uv run ruff check --fix src/ tests/
 
 ---
 
+## Documentation
+
+The public API documentation is built with Sphinx (Furo theme) and deployed to
+**https://beykyle.github.io/lax/** on every push to `main` via the
+`.github/workflows/docs.yml` workflow.
+
+### Building docs locally
+
+```bash
+uv sync --group docs   # installs sphinx, nbsphinx, pandoc binary, and all deps
+uv run sphinx-build -b html docs/ docs/_build/html
+open docs/_build/html/index.html   # macOS; use xdg-open on Linux
+```
+
+To check that the build produces zero warnings (same gate as CI):
+
+```bash
+uv run sphinx-build -b html docs/ docs/_build/html --fail-on-warning -q
+```
+
+### Docs structure
+
+```
+docs/
+├── conf.py          # Sphinx config: extensions, theme, intersphinx, nbsphinx
+├── index.rst        # Landing page and top-level toctree
+├── api.rst          # automodule directives for every public symbol
+├── examples.rst     # toctree of example notebooks
+└── _static/
+    └── custom.css   # Minor CSS tweaks
+```
+
+The `docs/notebooks/` symlink is created at build time by `conf.py` and points to
+`../examples/`.  Do not commit it; it is ephemeral.
+
+### Adding API docs
+
+Docstrings are pulled automatically by `autodoc`.  Every public symbol must have a
+numpy-style docstring (see the Formatting section).  To expose a new module, add an
+`.. automodule::` directive to `docs/api.rst`.
+
+### Adding example notebooks
+
+1. Create the notebook in `examples/`.
+2. Run it to completion and **save with outputs** — `nbsphinx_execute = "never"` means
+   the docs build renders the committed outputs without re-executing.
+3. Add the notebook filename (without extension) to the toctree in `docs/examples.rst`.
+4. The CI test `tests/benchmarks/test_examples_notebooks.py` verifies execution
+   correctness independently.
+
+### One-time GitHub setup
+
+To enable GitHub Pages deployment, go to the repo **Settings → Pages → Source** and
+select **"GitHub Actions"**.  This only needs to be done once.
+
+---
+
 ## JAX patterns — required and forbidden
 
 ### Required

@@ -2,6 +2,9 @@
 ./theory/*
 ./prototype/*
 
+# docs build
+/docs/_build/
+
 # .ipynb_checkpoints
 */.ipynb_checkpoints/*
 

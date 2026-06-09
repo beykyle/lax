@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ------------------------------------------------------------------
+  # Detect which parts of the source changed so slow jobs can be skipped.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      solver: ${{ steps.filter.outputs.solver }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            solver:
+              - 'src/lax/meshes/**'
+              - 'src/lax/solvers/**'
+              - 'src/lax/spectral/**'
+              - 'src/lax/boundary/**'
+              - 'src/lax/operators/**'
+              - 'src/lax/transforms/**'
+              - 'src/lax/compile.py'
+              - 'src/lax/propagate.py'
+
+  # ------------------------------------------------------------------
+  # Required: formatting, lint, type-check.  Always runs.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --extra cpu
+      - run: uv run ruff format --check src/ tests/
+      - run: uv run ruff check src/ tests/
+      - run: uv run pyright src/
+
+  # ------------------------------------------------------------------
+  # Required: unit tests.  Always runs.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --extra cpu
+      - run: uv run pytest tests/unit/ -n auto
+
+  # ------------------------------------------------------------------
+  # Informational: property tests.  Only runs when solver / mesh code changes.
+  property:
+    needs: changes
+    if: needs.changes.outputs.solver == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --extra cpu
+      - run: uv run pytest tests/property/ -n auto
+
+  # ------------------------------------------------------------------
+  # Informational: benchmark tests.  Only runs when solver / mesh code changes.
+  benchmark:
+    needs: changes
+    if: needs.changes.outputs.solver == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --extra cpu
+      - run: uv run pytest tests/benchmarks/ -n auto

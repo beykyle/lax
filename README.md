@@ -1,6 +1,13 @@
 # lax
 
+[![CI](https://github.com/beykyle/lax/actions/workflows/ci.yml/badge.svg)](https://github.com/beykyle/lax/actions/workflows/ci.yml)
+[![Docs](https://github.com/beykyle/lax/actions/workflows/docs.yml/badge.svg)](https://beykyle.github.io/lax/)
+
 JAX-compiled Lagrange-mesh solvers for quantum scattering and bound-state problems.
+
+## Documentation
+
+Full API reference and rendered examples: **https://beykyle.github.io/lax/**
 
 ## Installation
 
