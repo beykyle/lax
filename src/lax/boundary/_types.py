@@ -17,126 +17,309 @@ type EnergyLike = float | jax.Array
 
 
 class SpectrumKernel(Protocol):
-    """Callable interface for the compiled spectrum kernel."""
+    """Callable that maps a potential to its spectral decomposition."""
 
     def __call__(self, potential: jax.Array) -> Spectrum:
-        """Return the spectral decomposition for one assembled potential."""
+        """Return the spectral decomposition for one assembled potential.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential array, shape ``(N_c, N_c, N)`` for local or
+            ``(N_c, N_c, N, N)`` for non-local.
+
+        Returns
+        -------
+        Spectrum
+            Eigendecomposition of the Bloch-augmented Hamiltonian.
+        """
         ...
 
 
 class RMatrixObservable(Protocol):
-    """Callable interface for the spectral R-matrix observable."""
+    """Callable that evaluates the spectral R-matrix at an arbitrary energy."""
 
     def __call__(self, spectrum: Spectrum, energy: EnergyLike) -> jax.Array:
-        """Evaluate the R-matrix at one energy."""
+        """Evaluate the R-matrix at one energy.
+
+        Parameters
+        ----------
+        spectrum
+            Spectral decomposition produced by ``solver.spectrum(V)``.
+        energy
+            Energy in MeV (scalar).
+
+        Returns
+        -------
+        jax.Array
+            R-matrix, shape ``(N_c, N_c)``.
+        """
         ...
 
 
 class SpectrumObservable(Protocol):
-    """Callable interface for observables evaluated from a Spectrum only."""
+    """Callable that evaluates one observable on the compile-time energy grid."""
 
     def __call__(self, spectrum: Spectrum) -> jax.Array:
-        """Evaluate an observable on the compile-time energy grid."""
+        """Evaluate an observable on the compile-time energy grid.
+
+        Parameters
+        ----------
+        spectrum
+            Spectral decomposition produced by ``solver.spectrum(V)``.
+
+        Returns
+        -------
+        jax.Array
+            Observable values on the compile-time grid, shape ``(N_E, ...)``.
+        """
         ...
 
 
 class SpectrumGridObservable(Protocol):
-    """Callable interface for observables aligned to a batched Spectrum grid."""
+    """Callable for aligned-grid observables from a batched Spectrum."""
 
     def __call__(self, spectra: Spectrum) -> jax.Array:
-        """Evaluate one observable per compile-time energy / Spectrum pair."""
+        """Evaluate one observable per compile-time energy / Spectrum pair.
+
+        Parameters
+        ----------
+        spectra
+            Batched ``Spectrum`` produced by ``jax.vmap(solver.spectrum)(V_grid)``,
+            with a leading batch axis of size ``N_E``.
+
+        Returns
+        -------
+        jax.Array
+            Observable values, shape ``(N_E, ...)``.
+        """
         ...
 
 
 class GreenFunctionObservable(Protocol):
-    """Callable interface for Green's-function evaluation."""
+    """Callable that evaluates the Green's function at an arbitrary energy."""
 
     def __call__(self, spectrum: Spectrum, energy: EnergyLike) -> jax.Array:
-        """Evaluate the Green's function at one energy."""
+        """Evaluate the Green's function at one energy.
+
+        Parameters
+        ----------
+        spectrum
+            Spectral decomposition; must have been produced with
+            ``'greens'`` in ``solvers=``.
+        energy
+            Energy in MeV (scalar).
+
+        Returns
+        -------
+        jax.Array
+            Resolvent ``(H - E/μ)⁻¹``, shape ``(M, M)``.
+        """
         ...
 
 
 class WavefunctionObservable(Protocol):
-    """Callable interface for internal wavefunction reconstruction."""
+    """Callable that reconstructs the internal scattering wavefunction."""
 
     def __call__(self, spectrum: Spectrum, energy: EnergyLike, source: jax.Array) -> jax.Array:
-        """Evaluate the internal wavefunction at one energy."""
+        """Evaluate the internal wavefunction at one energy.
+
+        Parameters
+        ----------
+        spectrum
+            Spectral decomposition; must have been produced with
+            ``'wavefunction'`` in ``solvers=``.
+        energy
+            Energy in MeV (scalar).
+        source
+            Mesh-space driving term, shape ``(N_c · N,)``.  Use
+            :func:`lax.make_wavefunction_source` to build it.
+
+        Returns
+        -------
+        jax.Array
+            Internal wavefunction coefficients in the mesh basis, shape ``(M,)``.
+        """
         ...
 
 
 class EigenpairAccessor(Protocol):
-    """Callable interface for raw eigensystem access."""
+    """Callable for raw access to eigenvalues and eigenvectors.
 
-    def __call__(self, spectrum: Spectrum) -> tuple[jax.Array, jax.Array | None]:
-        """Return the stored eigenvalues and optional eigenvectors."""
+    Raises ``RuntimeError`` if eigenvectors were not retained at compile time
+    (i.e. neither ``'greens'`` nor ``'wavefunction'`` was in ``solvers=``).
+    """
+
+    def __call__(self, spectrum: Spectrum) -> tuple[jax.Array, jax.Array]:
+        """Return the stored eigenvalues and eigenvectors.
+
+        Parameters
+        ----------
+        spectrum
+            Spectral decomposition with retained eigenvectors.
+
+        Returns
+        -------
+        tuple[jax.Array, jax.Array]
+            ``(eigenvalues, eigenvectors)`` — shapes ``(M,)`` and ``(M, M)``.
+
+        Raises
+        ------
+        RuntimeError
+            If eigenvectors were not retained at compile time.
+        """
         ...
 
 
 class DirectRMatrixKernel(Protocol):
-    """Callable interface for the linear-solve fallback kernel."""
+    """Callable that computes the direct R-matrix via per-energy linear solves."""
 
     def __call__(self, potential: jax.Array) -> jax.Array:
-        """Evaluate the direct R-matrix on the compile-time energy grid."""
+        """Evaluate the direct R-matrix on the compile-time energy grid.
+
+        Parameters
+        ----------
+        potential
+            Local potential array, shape ``(N_c, N_c, N)``.
+
+        Returns
+        -------
+        jax.Array
+            R-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``.
+        """
         ...
 
 
 class DirectGridObservable(Protocol):
-    """Callable interface for aligned-grid observables from batched potentials."""
+    """Callable for aligned-grid observables from per-energy potential batches."""
 
     def __call__(self, potentials: jax.Array) -> jax.Array:
-        """Evaluate one observable per compile-time energy / potential pair."""
+        """Evaluate one observable per compile-time energy / potential pair.
+
+        Parameters
+        ----------
+        potentials
+            Per-energy potentials, shape ``(N_E, N_c, N_c, N)``.
+
+        Returns
+        -------
+        jax.Array
+            Observable values, shape ``(N_E, ...)``.
+        """
         ...
 
 
 class InterpolatorBuilder(Protocol):
-    """Callable interface for solver-bound Padé interpolation builders."""
+    """Callable that builds a Padé interpolator over the compile-time grid."""
 
     def __call__(
         self,
         values: jax.Array,
         order: tuple[int, int] | None = None,
     ) -> Callable[[EnergyLike], jax.Array]:
-        """Build a Padé interpolator over the solver's compile-time energy grid."""
+        """Build a Padé interpolator over the solver's compile-time energy grid.
+
+        Parameters
+        ----------
+        values
+            Observable samples, shape ``(N_E, ...)``.
+        order
+            Padé numerator/denominator degrees ``(p, q)`` with ``p + q + 1 == N_E``.
+            Defaults to the diagonal approximant.
+
+        Returns
+        -------
+        Callable[[EnergyLike], jax.Array]
+            JIT-compiled interpolant; call it at any energy to evaluate.
+        """
         ...
 
 
 class GridVectorTransform(Protocol):
-    """Callable interface for mesh-vector to radial-grid transforms."""
+    """Callable that projects mesh coefficients onto a fine radial grid."""
 
     def __call__(self, values: jax.Array) -> jax.Array:
-        """Project mesh coefficients onto a radial grid."""
+        """Project mesh coefficients onto a radial grid.
+
+        Parameters
+        ----------
+        values
+            Mesh coefficient vector, shape ``(N,)``.
+
+        Returns
+        -------
+        jax.Array
+            Radial function values, shape ``(M_r,)``.
+        """
         ...
 
 
 class FromGridVectorTransform(Protocol):
-    """Callable interface for radial-grid to mesh-vector transforms."""
+    """Callable that projects fine-grid values back onto the mesh basis."""
 
     def __call__(
         self,
         values: jax.Array | Callable[[jax.Array], jax.Array],
     ) -> jax.Array:
-        """Project sampled radial-grid values or a callable profile onto the mesh basis."""
+        """Project sampled radial-grid values or a callable profile onto the mesh basis.
+
+        Parameters
+        ----------
+        values
+            Either a ``(M_r,)`` array of grid samples or a callable
+            ``f(r_grid) → (M_r,)`` that is evaluated on the compile-time grid.
+
+        Returns
+        -------
+        jax.Array
+            Mesh coefficient vector, shape ``(N,)``.
+        """
         ...
 
 
 class GridMatrixTransform(Protocol):
-    """Callable interface for mesh-matrix to radial-grid transforms."""
+    """Callable that projects a mesh-space kernel onto a fine radial grid."""
 
     def __call__(self, values: jax.Array) -> jax.Array:
-        """Project a mesh-space kernel onto a radial grid."""
+        """Project a mesh-space kernel onto a radial grid.
+
+        Parameters
+        ----------
+        values
+            Mesh kernel matrix, shape ``(N, N)``.
+
+        Returns
+        -------
+        jax.Array
+            Kernel on the fine grid, shape ``(M_r, M_r)``.
+        """
         ...
 
 
 class FourierTransform(Protocol):
-    """Callable interface for mesh-to-momentum transforms."""
+    """Callable that maps mesh coefficients or kernels to momentum space."""
 
     def __call__(self, values: jax.Array, channel_index: int = 0) -> jax.Array:
-        """Project mesh coefficients or kernels onto a momentum grid."""
+        """Project mesh coefficients or a kernel onto a momentum grid.
+
+        Parameters
+        ----------
+        values
+            Mesh vector ``(N,)`` or kernel ``(N, N)``.
+        channel_index
+            Which channel's angular momentum to use for the spherical Bessel
+            transform.
+
+        Returns
+        -------
+        jax.Array
+            Momentum-space array, shape ``(M_k,)`` or ``(M_k, M_k)``.
+        """
         ...
 
 
 class DoubleFourierTransform(Protocol):
-    """Callable interface for kernel transforms on left/right momentum grids."""
+    """Callable for the double Bessel transform of a mesh-space kernel."""
 
     def __call__(
         self,
@@ -144,22 +327,81 @@ class DoubleFourierTransform(Protocol):
         left_channel_index: int = 0,
         right_channel_index: int | None = None,
     ) -> jax.Array:
-        """Project a mesh-space kernel onto left/right momentum grids."""
+        """Project a mesh-space kernel onto left/right momentum grids.
+
+        Parameters
+        ----------
+        values
+            Mesh kernel, shape ``(N, N)``.
+        left_channel_index
+            Channel angular momentum for the left (row) transform.
+        right_channel_index
+            Channel angular momentum for the right (column) transform.
+            Defaults to ``left_channel_index``.
+
+        Returns
+        -------
+        jax.Array
+            Double-transformed kernel, shape ``(M_k, M_k)``.
+        """
         ...
 
 
 class Integrator(Protocol):
-    """Callable interface for norms and expectation values."""
+    """Callable for norms and expectation values in the mesh basis."""
 
     def __call__(self, values: jax.Array, operator: jax.Array | None = None) -> jax.Array:
-        """Integrate mesh coefficients with an optional operator insertion."""
+        """Integrate mesh coefficients with an optional operator insertion.
+
+        Parameters
+        ----------
+        values
+            Mesh coefficient vector, shape ``(N,)``.
+        operator
+            Optional ``(N, N)`` operator matrix.  When ``None``, computes
+            the norm ``⟨ψ|ψ⟩``.
+
+        Returns
+        -------
+        jax.Array
+            Scalar expectation value ``⟨ψ|O|ψ⟩``.
+        """
         ...
 
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class PropagationMatrices:
-    """Precomputed subinterval-propagation matrices for Legendre-x meshes."""
+    """Precomputed subinterval-propagation matrices for Legendre-x meshes.
+
+    Produced once by :func:`lax.propagate.build_legendre_x_propagation` and
+    stored inside the :class:`Mesh`.  All matrices are in fm⁻² units.
+
+    Attributes
+    ----------
+    n_intervals
+        Number of subintervals (static).
+    basis_size_per_interval
+        Number of Legendre basis functions per subinterval (static).
+    interval_width
+        Width of each subinterval in fm (static).
+    local_nodes
+        Legendre quadrature nodes on ``(0, 1)``, shape ``(basis_size,)``.
+    local_weights
+        Legendre quadrature weights, shape ``(basis_size,)``.
+    kinetic
+        Per-interval kinetic matrices, shape ``(n_intervals, basis_size, basis_size)``.
+    blo0
+        Bloch surface-overlap matrix for the left boundary of the first interval.
+    blo1
+        Bloch surface-overlap matrix at the left boundary of subsequent intervals.
+    blo2
+        Bloch surface-overlap matrix at the right boundary of interior intervals.
+    q1
+        Left surface-projector vectors, shape ``(n_intervals, basis_size)``.
+    q2
+        Right surface-projector vectors, shape ``(n_intervals, basis_size)``.
+    """
 
     n_intervals: int = field(metadata={"static": True})
     basis_size_per_interval: int = field(metadata={"static": True})
@@ -177,7 +419,40 @@ class PropagationMatrices:
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class Mesh:
-    """Concrete mesh data cached inside a compiled solver."""
+    """Concrete mesh data cached inside a compiled solver.
+
+    Produced by the mesh registry and embedded in the :class:`Solver` at
+    compile time.  Static fields are baked into the JAX JIT cache key;
+    changing them requires recompilation.
+
+    Attributes
+    ----------
+    family
+        Mesh family, e.g. ``"legendre"`` or ``"laguerre"`` (static).
+    regularization
+        Endpoint regularization, e.g. ``"x"`` or ``"x(1-x)"`` (static).
+    n
+        Number of basis functions per channel (static).
+    scale
+        Physical scale: channel radius ``a`` in fm for finite-interval
+        meshes, or the Laguerre scaling factor ``h`` in fm (static).
+    n_intervals
+        Number of subintervals for propagated meshes; ``1`` otherwise (static).
+    basis_size_per_interval
+        Basis functions per subinterval; equals ``n`` when ``n_intervals == 1``
+        (static).
+    nodes
+        Canonical mesh nodes on ``(0, 1)`` or ``(0, ∞)``, shape ``(n,)``.
+    weights
+        Gauss quadrature weights λ_i, shape ``(n,)``.
+    radii
+        Physical radial mesh points r_i = scale · x_i, shape ``(n,)``.
+    basis_at_boundary
+        Lagrange basis values φ_j(a) at the channel surface, shape ``(n,)``.
+        All zeros for semi-infinite (Laguerre) meshes.
+    propagation
+        Subinterval propagation matrices, or ``None`` for single-interval meshes.
+    """
 
     family: MeshFamily = field(metadata={"static": True})
     regularization: Regularization = field(metadata={"static": True})
@@ -195,7 +470,28 @@ class Mesh:
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class OperatorMatrices:
-    """Precomputed single-channel matrices in fm^-2 units."""
+    """Precomputed single-channel operator matrices in fm⁻² units.
+
+    All populated fields are ``(N, N)`` symmetric real matrices in the
+    Lagrange-mesh basis.  Unrequested operators are ``None``.
+
+    Attributes
+    ----------
+    T
+        Kinetic-energy matrix ``-d²/dr²`` (Laguerre meshes, no Bloch term).
+    TpL
+        Bloch-augmented kinetic matrix ``T + L(B=0)``.  This is the standard
+        operator for R-matrix calculations on finite-interval (Legendre) meshes.
+    T_alpha
+        Hyperradial kinetic matrix for α-type coordinates (Laguerre meshes with
+        three-body regularization).
+    D
+        First-derivative matrix ``d/dr``.
+    inv_r
+        Diagonal ``1/r`` matrix.
+    inv_r2
+        Diagonal ``1/r²`` matrix.
+    """
 
     T: jax.Array | None = None
     TpL: jax.Array | None = None
@@ -208,7 +504,33 @@ class OperatorMatrices:
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class BoundaryValues:
-    """Boundary values at the channel radius for each compile-time energy."""
+    """Coulomb and Whittaker boundary values at the channel radius.
+
+    Precomputed at compile time by ``mpmath`` for every ``(energy, channel)``
+    pair.  Open channels use Coulomb Hankel functions; closed channels use
+    Whittaker functions that decay exponentially into the barrier.
+
+    Attributes
+    ----------
+    H_plus
+        Outgoing Coulomb Hankel function ``H⁺ = G + iF`` at ``r = a``,
+        shape ``(N_E, N_c)``, complex.
+    H_minus
+        Incoming Coulomb Hankel function ``H⁻ = G - iF`` at ``r = a``,
+        shape ``(N_E, N_c)``, complex.
+    H_plus_p
+        ``ρ · d/dρ H⁺`` evaluated at ``ρ = ka``,
+        shape ``(N_E, N_c)``, complex.
+    H_minus_p
+        ``ρ · d/dρ H⁻`` evaluated at ``ρ = ka``,
+        shape ``(N_E, N_c)``, complex.
+    is_open
+        Boolean mask: ``True`` for open channels (``E > E_threshold``),
+        shape ``(N_E, N_c)``.
+    k
+        Channel wave numbers ``k_c(E)`` in fm⁻¹, shape ``(N_E, N_c)``,
+        or ``None`` when not needed for matching.
+    """
 
     H_plus: jax.Array
     H_minus: jax.Array
@@ -221,7 +543,26 @@ class BoundaryValues:
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class TransformMatrices:
-    """Optional precomputed matrices for grid and momentum transforms."""
+    """Precomputed matrices for radial-grid and momentum-space transforms.
+
+    All fields default to ``None``; only those corresponding to the ``grid``
+    and ``momenta`` arguments supplied to :func:`lax.compile` are populated.
+
+    Attributes
+    ----------
+    B_grid
+        Basis-evaluation matrix ``B[k, j] = f_j(r_k)``,
+        shape ``(M_r, N)``.  Used by ``to_grid_vector`` and ``to_grid_matrix``.
+    grid_r
+        Fine radial grid passed to :func:`lax.compile`, shape ``(M_r,)`` in fm.
+        Also accessible as ``solver.grid_r``.
+    F_momentum
+        Fourier-Bessel transform matrices, one per channel,
+        shape ``(N_c, M_k, N)``.  Used by the ``fourier`` callable.
+    momenta
+        Momentum grid passed to :func:`lax.compile`, shape ``(M_k,)`` in fm⁻¹.
+        Also accessible as ``solver.momenta``.
+    """
 
     B_grid: jax.Array | None = None
     grid_r: jax.Array | None = None
@@ -231,7 +572,88 @@ class TransformMatrices:
 
 @dataclass(frozen=True)
 class Solver:
-    """Compiled solver bundle containing caches and pickle-safe runtime callables."""
+    """Compiled solver bundle produced by :func:`lax.compile`.
+
+    Holds all compile-time caches (mesh, operators, boundary values, transform
+    matrices) alongside JIT-compiled, pickle-safe runtime callables.  Call
+    ``print(solver)`` to see which observables were compiled.
+
+    Attributes
+    ----------
+    mesh
+        Compiled mesh data (nodes, weights, radii, boundary values).
+    operators
+        Precomputed single-channel operator matrices in fm⁻².
+    channels
+        Channel definitions baked into the solver at compile time.
+    energies
+        Compile-time energy grid in MeV, shape ``(N_E,)``.
+    boundary
+        Coulomb/Whittaker boundary values at ``r = a``, or ``None`` if no
+        energy grid was supplied.
+    transforms
+        Precomputed radial-grid and momentum-space transform matrices.
+    method
+        Linear-algebra backend: ``"eigh"``, ``"eig"``, or ``"linear_solve"``.
+
+    **Spectral-path observables** (present when ``method`` is ``"eigh"``/``"eig"``):
+
+    spectrum
+        ``(V) → Spectrum`` — one eigendecomposition per potential.
+    rmatrix
+        ``(spectrum, E) → R(E)`` — R-matrix at any scalar energy.
+    smatrix
+        ``(spectrum) → S`` — S-matrix on the compile-time energy grid.
+    phases
+        ``(spectrum) → δ`` — phase shifts ``(N_E, N_c)`` in radians.
+    greens
+        ``(spectrum, E) → G(E)`` — Green's function; requires ``'greens'``
+        in ``solvers=``.
+    wavefunction
+        ``(spectrum, E, source) → ψ_int`` — internal wavefunction; requires
+        ``'wavefunction'`` in ``solvers=``.
+    eigh
+        ``(spectrum) → (ε, U)`` — raw eigenpairs; raises if eigenvectors
+        were not retained.
+    rmatrix_grid
+        ``(spectra) → R`` — aligned-grid R for energy-dependent workflows.
+    smatrix_grid
+        ``(spectra) → S`` — aligned-grid S.
+    phases_grid
+        ``(spectra) → δ`` — aligned-grid phases.
+
+    **Direct-path observables** (present when ``"rmatrix_direct"`` in ``solvers=``):
+
+    rmatrix_direct
+        ``(V) → R`` — per-energy linear-solve R-matrix on the compile-time grid.
+    rmatrix_direct_grid
+        ``(V_grid) → R`` — aligned-grid direct R for energy-dependent V.
+    smatrix_direct_grid
+        ``(V_grid) → S`` — aligned-grid direct S.
+    phases_direct_grid
+        ``(V_grid) → δ`` — aligned-grid direct phases.
+
+    **Padé interpolation builders** (present whenever ``energies`` was supplied):
+
+    interpolate_rmatrix, interpolate_smatrix, interpolate_phases
+        ``(samples, order=None) → callable`` — build a Padé interpolant over
+        the compile-time grid.
+
+    **Transform helpers**:
+
+    to_grid_vector
+        ``(c) → ψ(r)`` — mesh coefficients to fine radial grid.
+    from_grid_vector
+        ``(ψ_or_fn) → c`` — fine grid values back to mesh coefficients.
+    to_grid_matrix
+        ``(V) → V(r, r')`` — mesh kernel to fine radial grid.
+    fourier
+        ``(c, channel_index=0) → ũ(k)`` — momentum-space transform.
+    double_fourier_transform
+        ``(V, ...) → V(p, p')`` — double Bessel transform for kernels.
+    integrate
+        ``(c, operator=None) → ⟨ψ|O|ψ⟩`` — norms and expectation values.
+    """
 
     mesh: Mesh
     operators: OperatorMatrices
@@ -263,6 +685,53 @@ class Solver:
     fourier: FourierTransform | None = None
     double_fourier_transform: DoubleFourierTransform | None = None
     integrate: Integrator | None = None
+
+    # ------------------------------------------------------------------
+    # Convenience properties
+
+    @property
+    def grid_r(self) -> jax.Array | None:
+        """Radial grid passed to :func:`lax.compile`, or ``None``."""
+        return self.transforms.grid_r
+
+    @property
+    def momenta(self) -> jax.Array | None:
+        """Momentum grid passed to :func:`lax.compile`, or ``None``."""
+        return self.transforms.momenta
+
+    # ------------------------------------------------------------------
+    # Human-readable repr
+
+    def __repr__(self) -> str:
+        _observable_names = (
+            "spectrum",
+            "rmatrix",
+            "smatrix",
+            "phases",
+            "greens",
+            "wavefunction",
+            "eigh",
+            "rmatrix_grid",
+            "smatrix_grid",
+            "phases_grid",
+            "rmatrix_direct",
+        )
+        _transform_names = (
+            "to_grid_vector",
+            "to_grid_matrix",
+            "fourier",
+            "integrate",
+        )
+        live = [n for n in _observable_names if getattr(self, n) is not None]
+        transforms = [n for n in _transform_names if getattr(self, n) is not None]
+        n_e = len(self.energies)
+        return (
+            f"Solver({self.mesh.family}/{self.mesh.regularization} "
+            f"n={self.mesh.n} scale={self.mesh.scale}fm, "
+            f"method={self.method}, {n_e} {'energy' if n_e == 1 else 'energies'})\n"
+            f"  observables: {' '.join(live) or 'none'}\n"
+            f"  transforms:  {' '.join(transforms) or 'none'}"
+        )
 
 
 __all__ = [

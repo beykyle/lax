@@ -58,7 +58,24 @@ class _GridMatrixProjection:
 
 
 def compute_B_grid(mesh: Mesh, radii: jax.Array) -> jax.Array:
-    """Return `B[k, j] = f_j(r_k)` for one physical radial grid. [DESIGN.md §13.1]"""
+    """Compute the basis-evaluation matrix ``B[k, j] = f_j(r_k)``.
+
+    Evaluates every Lagrange basis function at every point on the fine radial
+    grid.  The result is the precomputed factor enabling ``ψ(r) = B c`` with
+    a single matrix-vector multiply at runtime.  [DESIGN.md §13.1]
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh whose ``(family, regularization)`` selects the evaluator.
+    radii
+        Fine radial grid in fm, shape ``(M_r,)``.
+
+    Returns
+    -------
+    jax.Array
+        Basis-evaluation matrix, shape ``(M_r, N)``.
+    """
 
     return basis_at(mesh, radii)
 
@@ -68,7 +85,23 @@ def make_to_grid(
     basis_grid: jax.Array,
     radii: jax.Array,
 ) -> tuple[GridVectorTransform, FromGridVectorTransform, GridMatrixTransform]:
-    """Return JIT-compiled grid projection helpers in both directions."""
+    """Return JIT-compiled grid projection callables in both directions.
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh (used to build the back-projection matrix).
+    basis_grid
+        Precomputed ``B`` matrix, shape ``(M_r, N)``.
+    radii
+        Fine radial grid in fm, shape ``(M_r,)``.
+
+    Returns
+    -------
+    tuple[GridVectorTransform, FromGridVectorTransform, GridMatrixTransform]
+        Three callables: ``to_grid_vector``, ``from_grid_vector``,
+        ``to_grid_matrix``.
+    """
 
     projection_matrix = _compute_from_grid_projection(mesh, basis_grid, radii)
     return (
@@ -99,15 +132,9 @@ def _to_grid_matrix(values: jax.Array, basis_grid: jax.Array) -> jax.Array:
     return result
 
 
-_TO_GRID_VECTOR_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-    _to_grid_vector
-)
-_FROM_GRID_ARRAY_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-    _from_grid_array
-)
-_TO_GRID_MATRIX_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-    _to_grid_matrix
-)
+_TO_GRID_VECTOR_JIT = jax.jit(_to_grid_vector)
+_FROM_GRID_ARRAY_JIT = jax.jit(_from_grid_array)
+_TO_GRID_MATRIX_JIT = jax.jit(_to_grid_matrix)
 
 
 def _compute_from_grid_projection(mesh: Mesh, basis_grid: jax.Array, radii: jax.Array) -> jax.Array:
@@ -127,7 +154,7 @@ def _compute_from_grid_projection(mesh: Mesh, basis_grid: jax.Array, radii: jax.
     else:
         projection = np.linalg.pinv(basis_grid_np)
 
-    projection_array: jax.Array = jnp.asarray(projection)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    projection_array: jax.Array = jnp.asarray(projection)
     return projection_array
 
 

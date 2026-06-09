@@ -1,3 +1,5 @@
+"""Wigner angular-momentum coupling coefficients."""
+
 from __future__ import annotations
 
 import math
@@ -5,7 +7,22 @@ from typing import Final
 
 
 def wigner_3j(j1: int, j2: int, j3: int, m1: int, m2: int, m3: int) -> float:
-    """Return the Wigner 3j symbol for small integer angular momenta."""
+    """Return the Wigner 3j symbol for small integer angular momenta.
+
+    Parameters
+    ----------
+    j1, j2, j3
+        Angular momentum quantum numbers (non-negative integers).
+    m1, m2, m3
+        Magnetic quantum numbers satisfying ``-j_i ≤ m_i ≤ j_i``.
+
+    Returns
+    -------
+    float
+        Value of the 3j symbol.  Returns ``0.0`` if any selection rule is
+        violated: triangle inequality on ``(j1, j2, j3)``, ``m1+m2+m3 ≠ 0``,
+        or ``|m_i| > j_i``.
+    """
 
     if m1 + m2 + m3 != 0:
         return 0.0
@@ -42,7 +59,25 @@ def wigner_3j(j1: int, j2: int, j3: int, m1: int, m2: int, m3: int) -> float:
 
 
 def wigner_6j(j1: int, j2: int, j3: int, l1: int, l2: int, l3: int) -> float:
-    """Return the Wigner 6j symbol for small integer angular momenta."""
+    """Return the Wigner 6j symbol for small integer angular momenta.
+
+    The 6j symbol encodes recoupling coefficients between different orderings
+    of three angular momenta.
+
+    Parameters
+    ----------
+    j1, j2, j3
+        First row of the 6j table (non-negative integers).
+    l1, l2, l3
+        Second row of the 6j table (non-negative integers).
+
+    Returns
+    -------
+    float
+        Value of the 6j symbol.  Returns ``0.0`` if any of the four triangle
+        conditions ``(j1,j2,j3)``, ``(j1,l2,l3)``, ``(l1,j2,l3)``,
+        ``(l1,l2,j3)`` is violated.
+    """
 
     if not (
         _triangle_allowed(j1, j2, j3)

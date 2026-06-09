@@ -15,7 +15,33 @@ def assemble_block_hamiltonian(
     channels: tuple[ChannelSpec, ...],
     potential: jax.Array,
 ) -> jax.Array:
-    """Assemble the Bloch-augmented Hamiltonian in fm^-2 units. [DESIGN.md §11.5]"""
+    """Assemble the Bloch-augmented block Hamiltonian in fm⁻² units.
+
+    Builds the ``(N_c·N, N_c·N)`` matrix whose eigendecomposition drives
+    all spectral observables.  Diagonal blocks contain ``T+L``, the
+    centrifugal term, the channel threshold, and the diagonal potential;
+    off-diagonal blocks contain the coupling potential.  [DESIGN.md §11.5]
+
+    All quantities are converted from MeV to fm⁻² by dividing by
+    ``channel.mass_factor`` (ℏ²/2μ in MeV·fm²).
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh supplying ``TpL`` and ``inv_r2``.
+    operators
+        Precomputed operator matrices; ``TpL`` must be present.
+    channels
+        Channel definitions (``l``, ``threshold``, ``mass_factor``).
+    potential
+        Assembled potential in MeV.  Shape ``(N_c, N_c, N)`` for local
+        or ``(N_c, N_c, N, N)`` for non-local.
+
+    Returns
+    -------
+    jax.Array
+        Block Hamiltonian, shape ``(N_c·N, N_c·N)``, in fm⁻².
+    """
 
     channel_count = len(channels)
     basis_size = mesh.n
@@ -31,7 +57,7 @@ def assemble_block_hamiltonian(
         angular_momentum = channels[channel_index].l
         threshold = channels[channel_index].threshold / mass_factor
         for coupled_index in range(channel_count):
-            block: jax.Array = jnp.zeros(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
+            block: jax.Array = jnp.zeros(
                 (basis_size, basis_size),
                 dtype=potential.dtype,
             )
@@ -41,7 +67,7 @@ def assemble_block_hamiltonian(
                     + t_plus_l
                     + angular_momentum * (angular_momentum + 1) * inv_r2
                     + threshold
-                    * jnp.eye(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
+                    * jnp.eye(
                         basis_size,
                         dtype=potential.dtype,
                     )
@@ -60,13 +86,30 @@ def assemble_block_hamiltonian(
 
 
 def build_Q(mesh: Mesh, channels: tuple[ChannelSpec, ...]) -> jax.Array:
-    """Return the surface projector `Q[c·N+j, c'] = δ_cc' φ_j(a)`. [DESIGN.md §11.5]"""
+    """Return the surface projector matrix Q.
+
+    ``Q[c·N + j, c'] = δ_{cc'} φ_j(a)`` — a block-diagonal matrix that
+    picks out the boundary-surface component of each channel's eigenvectors.
+    The surface amplitudes are then ``γ = U^T Q``.  [DESIGN.md §11.5]
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh supplying ``basis_at_boundary`` (shape ``(N,)``).
+    channels
+        Channel definitions; only the count is used.
+
+    Returns
+    -------
+    jax.Array
+        Surface projector, shape ``(N_c·N, N_c)``.
+    """
 
     channel_count = len(channels)
     basis_size = mesh.n
     boundary = mesh.basis_at_boundary
 
-    q: jax.Array = jnp.zeros(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
+    q: jax.Array = jnp.zeros(
         (channel_count * basis_size, channel_count),
         dtype=boundary.dtype,
     )
@@ -80,7 +123,7 @@ def build_Q(mesh: Mesh, channels: tuple[ChannelSpec, ...]) -> jax.Array:
 def _diagonal_from_vector(values: jax.Array) -> jax.Array:
     """Construct a diagonal matrix from one vector."""
 
-    matrix: jax.Array = jnp.diag(values)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs for diag are imprecise.
+    matrix: jax.Array = jnp.diag(values)
     return matrix
 
 

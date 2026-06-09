@@ -6,15 +6,17 @@ from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
-import mpmath as mp  # pyright: ignore[reportMissingTypeStubs] -- mpmath does not currently ship type stubs.
+import mpmath as mp
 import numpy as np
-import scipy.special as sc  # pyright: ignore[reportMissingTypeStubs] -- SciPy does not currently ship complete type stubs for special.
+import scipy.special as sc
 
 from lax.boundary._types import BoundaryValues
 from lax.types import ChannelSpec
 
-# pyright: reportCallIssue=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
-# mpmath is compile-time only here and does not ship usable type stubs.
+# reportUnknownMemberType is suppressed globally in pyproject.toml (JAX/mpmath stubs).
+# reportCallIssue, reportUnknownArgumentType, and reportUnknownVariableType are
+# suppressed here because mpmath's entire API is dynamically typed.
+# pyright: reportCallIssue=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
 
 
 def compute_boundary_values(
@@ -24,7 +26,39 @@ def compute_boundary_values(
     z1z2: tuple[int, int] | None = None,
     dps: int = 40,
 ) -> BoundaryValues:
-    """Compute Coulomb/Whittaker boundary values at the channel radius."""
+    """Compute Coulomb and Whittaker boundary values at the channel radius.
+
+    Evaluates the Hankel functions ``H± = G_L ± iF_L`` and their
+    ``ρ d/dρ`` derivatives at ``ρ = k·a`` for every ``(energy, channel)``
+    pair using ``mpmath`` with ``dps`` decimal digits of precision.  Closed
+    channels use the Whittaker function ``W_{-η, ℓ+1/2}(2|k|a)`` instead.
+
+    This function runs at compile time (pure Python/NumPy) and is never
+    traced by JAX.
+
+    Parameters
+    ----------
+    channels
+        Channel definitions specifying ``l``, ``threshold``, and
+        ``mass_factor`` for each channel.
+    energies
+        Compile-time energy grid in MeV, shape ``(N_E,)``.
+    channel_radius
+        Channel radius ``a`` in fm.
+    z1z2
+        Charge product ``(Z_1, Z_2)`` for Coulomb scattering.  Pass
+        ``None`` for neutral particles (``η = 0``).
+    dps
+        ``mpmath`` decimal precision.  The default of 40 provides ample
+        guard digits against cancellation near resonances.
+
+    Returns
+    -------
+    BoundaryValues
+        Boundary values for all ``(N_E, N_c)`` pairs.  Open-channel entries
+        use Coulomb Hankel functions; closed-channel entries use Whittaker
+        functions and the ``is_open`` mask is ``False``.
+    """
 
     mp.mp.dps = dps
     n_energies = len(energies)
@@ -166,7 +200,7 @@ def _sommerfeld(z1z2: tuple[int, int], k: float, mass_factor: float) -> float:
 def _mp_coulombf(l: int, eta: float, rho: float) -> object:
     """Evaluate the regular Coulomb function with mpmath."""
 
-    value: object = mp.coulombf(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType] -- mpmath APIs are dynamically typed.
+    value: object = mp.coulombf(  # pyright: ignore[reportUnknownArgumentType] -- mpmath APIs are dynamically typed.
         l,
         eta,
         rho,
@@ -177,7 +211,7 @@ def _mp_coulombf(l: int, eta: float, rho: float) -> object:
 def _mp_coulombg(l: int, eta: float, rho: float) -> object:
     """Evaluate the irregular Coulomb function with mpmath."""
 
-    value: object = mp.coulombg(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType] -- mpmath APIs are dynamically typed.
+    value: object = mp.coulombg(  # pyright: ignore[reportUnknownArgumentType] -- mpmath APIs are dynamically typed.
         l,
         eta,
         rho,
@@ -188,7 +222,7 @@ def _mp_coulombg(l: int, eta: float, rho: float) -> object:
 def _mp_whittaker_w(kappa: float, mu: float, rho: float) -> object:
     """Evaluate the Whittaker W function with mpmath."""
 
-    value: object = mp.whitw(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType] -- mpmath APIs are dynamically typed.
+    value: object = mp.whitw(  # pyright: ignore[reportUnknownArgumentType] -- mpmath APIs are dynamically typed.
         kappa,
         mu,
         rho,
@@ -200,7 +234,7 @@ def _differentiate(function: Callable[[float], object], rho: float) -> complex:
     """Differentiate an mpmath-callable function at one point."""
 
     return complex(
-        mp.diff(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType] -- mpmath differentiation is dynamically typed.
+        mp.diff(  # pyright: ignore[reportUnknownArgumentType] -- mpmath differentiation is dynamically typed.
             function,
             rho,
         )
@@ -241,7 +275,7 @@ def _neutral_open_channel_values(l: int, rho: float) -> tuple[complex, complex, 
 def _to_jax_array(values: np.ndarray) -> jax.Array:
     """Convert compile-time NumPy arrays to runtime JAX arrays."""
 
-    array: jax.Array = jnp.asarray(values)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    array: jax.Array = jnp.asarray(values)
     return array
 
 

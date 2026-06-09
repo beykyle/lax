@@ -76,15 +76,21 @@ uv sync --extra tpu --group dev
 
 ```python
 import lax   # must come before jax.numpy (sets x64 mode)
+import lax.constants as C
 import jax.numpy as jnp
+
+HBAR2_2MU = C.hbar2_over_2mu(1.008665, 1.008665)  # ≈ 41.47 MeV·fm² for n-n
 
 solver = lax.compile(
     mesh     = lax.MeshSpec("legendre", "x", n=20, scale=8.0),
-    channels = (lax.ChannelSpec(l=0, threshold=0.0, mass_factor=41.472),),
+    channels = (lax.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
     solvers  = ("spectrum", "phases"),
     energies = jnp.array([0.1, 10.0]),
 )
 ```
+
+> **Note:** `lax.compile` shadows Python's built-in `compile`.
+> Avoid `from lax import compile` in modules that also use the built-in.
 
 ## Currently supported meshes and methods
 

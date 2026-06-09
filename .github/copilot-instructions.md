@@ -57,9 +57,6 @@ src/lax/          # installed package (src layout)
 │   └── laguerre.py         # Laguerre: "x", "x^3/2", "modified_x^2"
 │
 ├── operators/              # compile-time matrix builders
-│   ├── kinetic.py          # T, T+L, T_alpha
-│   ├── position.py         # 1/r, 1/r², x, x²
-│   ├── derivative.py       # d/dr
 │   └── potential.py        # assemble_local, assemble_nonlocal
 │
 ├── spectral/               # mesh-independent; pure linear algebra on eigenpairs
@@ -123,11 +120,19 @@ from __future__ import annotations
 
 ### Pyright
 
-The project uses Pyright in `basic` mode (`pyproject.toml` `[tool.pyright]`). All code
-must pass `pyright src/` with zero errors before a PR is opened. If Pyright cannot
-infer a type due to JAX's own stub limitations, add a narrow inline cast:
+The project uses Pyright in `strict` mode (`pyproject.toml` `[tool.pyright]`). All code
+must pass `pyright src/` with zero errors before a PR is opened.
+
+`reportUnknownMemberType` and `reportMissingTypeStubs` are suppressed globally in
+`pyproject.toml` because JAX, scipy, and mpmath ship incomplete stubs — those rules
+would fire at ~115 call sites through no fault of the library's own code. Do **not**
+add new inline `# pyright: ignore[reportUnknownMemberType]` comments; if a genuine
+unknown-member error appears, fix it with a `cast()`.
+
+For other Pyright limitations (e.g. lost return types through tuple unpacking), add
+a narrow inline cast rather than a broad ignore:
 ```python
-eigvals: jax.Array = jnp.linalg.eigh(H)[0]  # Pyright loses type through tuple unpack
+eigvals: jax.Array = cast(jax.Array, jnp.linalg.eigh(H)[0])
 ```
 Do not use `# type: ignore` without a comment explaining why.
 
@@ -310,17 +315,12 @@ loosened.
 
 ### Property tests — run before merging any solver change
 
-Invoked with `uv run pytest -m property`. These use Hypothesis and must pass with the
-default profile (200 examples). **Tolerances are fixed and must not be loosened.**
+Invoked with `uv run pytest -m property`. Currently only `test_hermiticity.py` is
+implemented; `test_unitarity.py` and `test_autograd.py` are planned but not yet written.
 
 | Test | What it checks | Tolerance |
 |---|---|---|
 | `test_hermiticity.py::test_TpL_symmetric` | `‖TpL - TpLᵀ‖_F / ‖TpL‖_F` | 1e-12 |
-| `test_unitarity.py::test_S_unitary_real_V` | `‖S†S - I‖_F` for random real V | 1e-10 |
-| `test_unitarity.py::test_S_symmetric_real_V` | `‖S - Sᵀ‖_F` for random real symmetric V | 1e-10 |
-| `test_unitarity.py::test_spectral_vs_direct` | `‖R_spectral - R_direct‖_F` at each E | 1e-10 |
-| `test_autograd.py::test_grad_loss_vs_fd` | `‖∂loss/∂params - FD‖ / ‖FD‖` | 1e-5 |
-| `test_autograd.py::test_vmap_vs_loop` | `‖vmap(rmatrix)(spec, Es) - for-loop‖` | 1e-12 |
 
 ### Full suite command
 

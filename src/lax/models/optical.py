@@ -174,7 +174,7 @@ def rotor_coupled_optical_potential(
     complex_depth = model.real_depth + 1.0j * model.imaginary_depth
     nuclear = -complex_depth * nuclear_shape
 
-    result: jax.Array = jnp.zeros_like(  # pyright: ignore[reportUnknownMemberType] -- JAX zeros_like stubs are imprecise.
+    result: jax.Array = jnp.zeros_like(
         nuclear,
         dtype=jnp.complex128,
     )
@@ -297,7 +297,7 @@ def uniform_sphere_coulomb_potential(
     prefactor = projectile_charge * target_charge * 1.44
     inside = prefactor * (3.0 - (radii / radius) ** 2) / (2.0 * radius)
     outside = prefactor / radii
-    return jnp.where(radii <= radius, inside, outside)  # pyright: ignore[reportUnknownMemberType] -- JAX where stubs are imprecise.
+    return jnp.where(radii <= radius, inside, outside)
 
 
 def rotor_coupling_coefficient(

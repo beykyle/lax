@@ -65,7 +65,35 @@ def make_spectrum_kernel(
     method: Method = "eigh",
     keep_eigenvectors: bool = False,
 ) -> SpectrumKernel:
-    """Build a JIT-compiled `spectrum(V) -> Spectrum` kernel. [DESIGN.md §11.1]"""
+    """Build a JIT-compiled ``spectrum(V) → Spectrum`` kernel.
+
+    The returned kernel assembles the Bloch-augmented Hamiltonian from the
+    supplied potential, eigendecomposes it once, and returns a :class:`Spectrum`
+    holding eigenvalues, surface amplitudes, and (optionally) eigenvectors.
+    One eigendecomposition supports all downstream observables at all energies.
+    [DESIGN.md §11.1]
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh supplying operator matrices and boundary values.
+    operators
+        Precomputed single-channel operator matrices (``TpL`` required).
+    channels
+        Channel definitions baked into the solver.
+    method
+        Eigendecomposition backend: ``"eigh"`` for real/Hermitian potentials
+        (GPU-ready), ``"eig"`` for complex potentials (CPU callback).
+    keep_eigenvectors
+        Whether to retain the full eigenvector matrix U in the returned
+        :class:`Spectrum`.  Required for Green's functions and wavefunctions;
+        saves memory and computation when only R/S/phases are needed.
+
+    Returns
+    -------
+    SpectrumKernel
+        JIT-compiled callable: ``kernel(V) → Spectrum``.
+    """
 
     q = build_Q(mesh, channels)
     return _SpectrumKernel(
@@ -91,9 +119,7 @@ def _spectrum_eigh(
     hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
     eigensystem = cast(
         tuple[jax.Array, jax.Array],
-        jnp.linalg.eigh(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg stubs lose tuple precision here.
-            hamiltonian
-        ),
+        jnp.linalg.eigh(hamiltonian),
     )
     eigenvalues, eigenvectors = eigensystem
     surface_amplitudes: jax.Array = eigenvectors.T @ q
@@ -128,11 +154,11 @@ def _spectrum_eig(
     )
 
 
-_SPECTRUM_EIGH_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_SPECTRUM_EIGH_JIT = jax.jit(
     _spectrum_eigh,
     static_argnames=("channels", "keep_eigenvectors"),
 )
-_SPECTRUM_EIG_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_SPECTRUM_EIG_JIT = jax.jit(
     _spectrum_eig,
     static_argnames=("channels", "keep_eigenvectors"),
 )
@@ -152,7 +178,7 @@ def _eig_via_callback(hamiltonian: jax.Array) -> tuple[jax.Array, jax.Array]:
         return values.astype(np.complex128), vectors.astype(np.complex128)
 
     complex_hamiltonian = hamiltonian.astype(jnp.complex128)
-    eigensystem = jax.pure_callback(  # pyright: ignore[reportUnknownMemberType] -- JAX callback stubs are imprecise.
+    eigensystem = jax.pure_callback(
         numpy_eig,
         result_shape,
         complex_hamiltonian,

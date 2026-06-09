@@ -7,9 +7,10 @@ from typing import Final
 import jax
 import jax.numpy as jnp
 
+from lax.constants import hbar2_over_2mu
 from lax.types import ChannelSpec
 
-NN_MASS_FACTOR: Final[float] = 41.472
+NN_MASS_FACTOR: Final[float] = hbar2_over_2mu(1.008665, 1.008665)
 
 _REID_MU: Final[float] = 0.7
 _REID_H: Final[float] = 10.463

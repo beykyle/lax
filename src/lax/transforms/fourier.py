@@ -8,7 +8,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.special as sc  # pyright: ignore[reportMissingTypeStubs] -- SciPy does not currently ship complete type stubs for special.
+import scipy.special as sc
 
 from lax.boundary._types import DoubleFourierTransform, FourierTransform, Mesh, TransformMatrices
 from lax.meshes._basis_eval import basis_at
@@ -72,13 +72,35 @@ def compute_F_momentum(
     angular_momentum: int,
     n_quad: int = 200,
 ) -> jax.Array:
-    """Return `F[k, j] = sqrt(2/pi) ∫ j_l(k r) f_j(r) dr`. [DESIGN.md §13.2]"""
+    """Compute the Fourier-Bessel transform matrix ``F[k, j] = √(2/π) ∫ j_ℓ(k r) f_j(r) dr``.
+
+    Evaluates the partial-wave Fourier transform matrix at compile time using
+    an internal Gauss-Legendre quadrature.  [DESIGN.md §13.2]
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh supplying basis functions and physical scale.
+    momenta
+        Momentum grid in fm⁻¹, shape ``(M_k,)``.
+    angular_momentum
+        Orbital angular momentum ``ℓ`` selecting the spherical Bessel function
+        ``j_ℓ``.
+    n_quad
+        Number of internal quadrature points.  200 is sufficient for meshes
+        with ``n ≤ 60``; increase for very large or highly oscillatory bases.
+
+    Returns
+    -------
+    jax.Array
+        Transform matrix, shape ``(M_k, N)``.
+    """
 
     radii, weights = _fourier_quadrature(mesh, n_quad)
     basis_values = np.asarray(
         basis_at(
             mesh,
-            jnp.asarray(radii),  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+            jnp.asarray(radii),
         )
     )
     momenta_np = np.asarray(momenta, dtype=np.float64)
@@ -86,13 +108,11 @@ def compute_F_momentum(
     matrix = np.zeros((momenta_np.shape[0], mesh.n), dtype=np.float64)
     prefactor = np.sqrt(2.0 / np.pi)
     for momentum_index, momentum in enumerate(momenta_np):
-        bessel = np.asarray(
-            sc.spherical_jn(angular_momentum, momentum * radii)  # pyright: ignore[reportUnknownMemberType] -- SciPy special stubs are imprecise for spherical_jn.
-        )
+        bessel = np.asarray(sc.spherical_jn(angular_momentum, momentum * radii))
         integrand = bessel[:, None] * basis_values
         matrix[momentum_index] = prefactor * (weights @ integrand)
 
-    result: jax.Array = jnp.asarray(matrix)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    result: jax.Array = jnp.asarray(matrix)
     return result
 
 
@@ -127,7 +147,24 @@ def _half_line_quadrature(scale: float, n_quad: int) -> tuple[np.ndarray, np.nda
 
 
 def make_fourier(transform_matrices: TransformMatrices) -> FourierTransform:
-    """Return a JIT-compiled Fourier transform bound to precomputed matrices."""
+    """Return a JIT-compiled Fourier-Bessel transform bound to precomputed matrices.
+
+    Parameters
+    ----------
+    transform_matrices
+        Must have ``F_momentum`` populated (i.e. ``momenta`` was passed to
+        :func:`lax.compile`).
+
+    Returns
+    -------
+    FourierTransform
+        Callable: ``fourier(values, channel_index=0) → momentum-space array``.
+
+    Raises
+    ------
+    ValueError
+        If ``transform_matrices.F_momentum`` is ``None``.
+    """
 
     if transform_matrices.F_momentum is None:
         msg = "TransformMatrices.F_momentum is required to build the Fourier transform."
@@ -137,7 +174,24 @@ def make_fourier(transform_matrices: TransformMatrices) -> FourierTransform:
 
 
 def make_double_fourier(transform_matrices: TransformMatrices) -> DoubleFourierTransform:
-    """Return a JIT-compiled double Fourier-Bessel transform for mesh kernels."""
+    """Return a JIT-compiled double Fourier-Bessel transform for mesh kernels.
+
+    Parameters
+    ----------
+    transform_matrices
+        Must have ``F_momentum`` populated.
+
+    Returns
+    -------
+    DoubleFourierTransform
+        Callable: ``double_fourier(values, left_channel_index, right_channel_index)
+        → (M_k, M_k)`` kernel in momentum space.
+
+    Raises
+    ------
+    ValueError
+        If ``transform_matrices.F_momentum`` is ``None``.
+    """
 
     if transform_matrices.F_momentum is None:
         msg = "TransformMatrices.F_momentum is required to build the double Fourier transform."
@@ -183,15 +237,15 @@ def _double_fourier(
     return result
 
 
-_FOURIER_VECTOR_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_FOURIER_VECTOR_JIT = jax.jit(
     _fourier_vector,
     static_argnames=("channel_index",),
 )
-_FOURIER_MATRIX_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_FOURIER_MATRIX_JIT = jax.jit(
     _fourier_matrix,
     static_argnames=("channel_index",),
 )
-_DOUBLE_FOURIER_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_DOUBLE_FOURIER_JIT = jax.jit(
     _double_fourier,
     static_argnames=("left_channel_index", "right_channel_index"),
 )

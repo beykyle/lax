@@ -15,7 +15,30 @@ def build_legendre_x_propagation(
     n_intervals: int,
     scale: float,
 ) -> PropagationMatrices:
-    """Return the precomputed matrices used by Descouvemont-style propagation."""
+    """Return the precomputed matrices used by Descouvemont-style R-matrix propagation.
+
+    Divides the internal region ``[0, a]`` into ``n_intervals`` equal
+    subintervals of width ``a / n_intervals``.  For each subinterval the
+    per-interval kinetic matrix and Bloch surface-overlap matrices are built
+    using the shifted Legendre-x formulae from Descouvemont.  The resulting
+    :class:`PropagationMatrices` object is stored inside the :class:`Mesh`
+    and consumed by ``_propagated_rmatrix_at_energy`` at runtime.
+
+    Parameters
+    ----------
+    basis_size_per_interval
+        Number of Legendre basis functions per subinterval.
+    n_intervals
+        Number of subintervals to divide the internal region into.
+    scale
+        Total channel radius ``a`` in fm.
+
+    Returns
+    -------
+    PropagationMatrices
+        All precomputed kinetic and boundary-overlap matrices for the
+        propagation recursion.
+    """
 
     nr = basis_size_per_interval
     ns = n_intervals
@@ -132,7 +155,7 @@ def build_legendre_x_propagation(
 def _to_jax_array(values: np.ndarray) -> jax.Array:
     """Convert a NumPy array to a runtime JAX array with an explicit type."""
 
-    array: jax.Array = jnp.asarray(values)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    array: jax.Array = jnp.asarray(values)
     return array
 
 

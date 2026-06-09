@@ -32,43 +32,140 @@ _O16_CA44_POTENTIAL = make_rotor_coupled_optical_potential(O16_CA44_ROTOR_MODEL)
 
 
 def np_j1_channels() -> tuple[ChannelSpec, ...]:
-    """Return the coupled ``n-p`` ``J=1`` channels."""
+    """Return the coupled n-p ``J=1`` channels.
+
+    .. deprecated::
+        Use :func:`lax.models.reid_np_j1_channels` directly.
+
+    Returns
+    -------
+    tuple[ChannelSpec, ...]
+        ``(³S₁, ³D₁)`` channel pair.
+    """
 
     return reid_np_j1_channels()
 
 
 def alpha_c12_channels() -> tuple[ChannelSpec, ...]:
-    """Return the legacy ``α + 12C`` channel tuple."""
+    """Return the α + ¹²C channel tuple.
+
+    .. deprecated::
+        Use ``lax.models.channels_from_rotor_model(lax.models.ALPHA_C12_ROTOR_MODEL)``
+        directly.
+
+    Returns
+    -------
+    tuple[ChannelSpec, ...]
+        Channel definitions for the α + ¹²C rotor-coupled model.
+    """
 
     return channels_from_rotor_model(ALPHA_C12_ROTOR_MODEL)
 
 
 def alpha_c12_open_channel_count(energy: float) -> int:
-    """Return the number of open ``α + 12C`` channels at one energy."""
+    """Return the number of open α + ¹²C channels at one energy.
+
+    .. deprecated::
+        Use ``lax.models.open_channel_count(lax.models.ALPHA_C12_ROTOR_MODEL, energy)``
+        directly.
+
+    Parameters
+    ----------
+    energy
+        Centre-of-mass energy in MeV.
+
+    Returns
+    -------
+    int
+        Number of channels with ``E > threshold``.
+    """
 
     return open_channel_count(ALPHA_C12_ROTOR_MODEL, energy)
 
 
 def alpha_c12_potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:
-    """Return the legacy ``α + 12C`` coupled optical potential."""
+    """Return the α + ¹²C coupled rotor-optical potential at one set of radii.
+
+    .. deprecated::
+        Use ``lax.models.make_rotor_coupled_optical_potential(lax.models.ALPHA_C12_ROTOR_MODEL)``
+        to get a callable, then call it directly.
+
+    Parameters
+    ----------
+    radii
+        Radial grid in fm.
+    channel_index
+        Bra-channel index.
+    coupled_index
+        Ket-channel index.
+
+    Returns
+    -------
+    jax.Array
+        Local potential values in MeV, shape ``(len(radii),)``.
+    """
 
     return _ALPHA_C12_POTENTIAL(radii, channel_index, coupled_index)
 
 
 def o16_ca44_channels() -> tuple[ChannelSpec, ...]:
-    """Return the legacy ``16O + 44Ca`` channel tuple."""
+    """Return the ¹⁶O + ⁴⁴Ca channel tuple.
+
+    .. deprecated::
+        Use ``lax.models.channels_from_rotor_model(lax.models.O16_CA44_ROTOR_MODEL)``
+        directly.
+
+    Returns
+    -------
+    tuple[ChannelSpec, ...]
+        Channel definitions for the ¹⁶O + ⁴⁴Ca rotor-coupled model.
+    """
 
     return channels_from_rotor_model(O16_CA44_ROTOR_MODEL)
 
 
 def o16_ca44_open_channel_count(energy: float) -> int:
-    """Return the number of open ``16O + 44Ca`` channels at one energy."""
+    """Return the number of open ¹⁶O + ⁴⁴Ca channels at one energy.
+
+    .. deprecated::
+        Use ``lax.models.open_channel_count(lax.models.O16_CA44_ROTOR_MODEL, energy)``
+        directly.
+
+    Parameters
+    ----------
+    energy
+        Centre-of-mass energy in MeV.
+
+    Returns
+    -------
+    int
+        Number of channels with ``E > threshold``.
+    """
 
     return open_channel_count(O16_CA44_ROTOR_MODEL, energy)
 
 
 def o16_ca44_potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:
-    """Return the legacy ``16O + 44Ca`` coupled optical potential."""
+    """Return the ¹⁶O + ⁴⁴Ca coupled rotor-optical potential at one set of radii.
+
+    .. deprecated::
+        Use ``lax.models.make_rotor_coupled_optical_potential(lax.models.O16_CA44_ROTOR_MODEL)``
+        to get a callable, then call it directly.
+
+    Parameters
+    ----------
+    radii
+        Radial grid in fm.
+    channel_index
+        Bra-channel index.
+    coupled_index
+        Ket-channel index.
+
+    Returns
+    -------
+    jax.Array
+        Local potential values in MeV, shape ``(len(radii),)``.
+    """
 
     return _O16_CA44_POTENTIAL(radii, channel_index, coupled_index)
 

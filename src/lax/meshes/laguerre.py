@@ -7,7 +7,7 @@ import math
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.special as sc  # pyright: ignore[reportMissingTypeStubs] -- SciPy does not currently ship complete type stubs for special.
+import scipy.special as sc
 
 from lax.boundary._types import Mesh, OperatorMatrices
 
@@ -23,7 +23,33 @@ def build_laguerre_x(
     alpha: float = 0.0,
     **extras: object,
 ) -> tuple[Mesh, OperatorMatrices]:
-    """Build Laguerre-x mesh data on `(0, ∞)`. [Baye eqs. 3.50, 3.61, 3.75-3.76]"""
+    """Build Laguerre-``x`` mesh data on ``(0, ∞)``.
+
+    Semi-infinite mesh with nodes ``r_i = h x_i`` where ``x_i`` are the
+    Laguerre zeros and ``h`` is the scaling factor.  For ``α = 0`` the
+    ``1/r`` operator is Gauss-exact, making this mesh ideal for Coulomb
+    and hydrogen-like systems.  [Baye eqs. 3.50, 3.61, 3.75–3.76]
+
+    Parameters
+    ----------
+    n
+        Number of basis functions.
+    scale
+        Laguerre scale factor ``h`` in fm.
+    operators
+        Set of operator strings to precompute.  Supported:
+        ``"T"``, ``"T+L"``, ``"1/r"``, ``"1/r^2"``.
+    alpha
+        Generalized Laguerre parameter ``α``.  Only ``α = 0`` is
+        implemented in v1.
+    **extras
+        Currently unused; reserved for future extensions.
+
+    Returns
+    -------
+    tuple[Mesh, OperatorMatrices]
+        Compiled mesh and precomputed operator matrices.
+    """
 
     del extras
     if alpha != 0.0:
@@ -73,7 +99,30 @@ def build_laguerre_modified_x2(
     alpha: float = 0.5,
     **extras: object,
 ) -> tuple[Mesh, OperatorMatrices]:
-    """Build modified-Laguerre-x^2 mesh data. [Baye eqs. 3.82-3.84, 3.88-3.91]"""
+    """Build modified Laguerre-``x²`` mesh data on ``(0, ∞)``.
+
+    Uses the substitution ``t = x²`` so nodes are the positive roots of
+    the generalized Laguerre polynomial in ``t``.  Well-suited for 3D
+    harmonic-oscillator-like potentials.
+    [Baye eqs. 3.82–3.84, 3.88–3.91]
+
+    Parameters
+    ----------
+    n
+        Number of basis functions.
+    scale
+        Scaling factor ``h`` in fm.
+    operators
+        Set of operator strings to precompute.  Supported:
+        ``"T"``, ``"T+L"``, ``"1/r"``, ``"1/r^2"``.
+    **extras
+        Currently unused; reserved for future extensions.
+
+    Returns
+    -------
+    tuple[Mesh, OperatorMatrices]
+        Compiled mesh and precomputed operator matrices.
+    """
 
     del extras
     if alpha != 0.5:
@@ -190,7 +239,7 @@ def _modified_laguerre_x2_kinetic(
 def _to_jax_array(values: np.ndarray) -> jax.Array:
     """Convert a NumPy array to a runtime JAX array with an explicit type."""
 
-    array: jax.Array = jnp.asarray(values)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    array: jax.Array = jnp.asarray(values)
     return array
 
 

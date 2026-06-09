@@ -71,11 +71,9 @@ def pade_interpolate(
     def evaluate(energy: jax.Array | float) -> jax.Array:
         """Evaluate the fitted Padé approximant at one or more energies."""
 
-        energy_array: jax.Array = jnp.asarray(  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely.
-            energy
-        )
+        energy_array: jax.Array = jnp.asarray(energy)
         shifted_energy: jax.Array = energy_array - center
-        flat_energy: jax.Array = jnp.reshape(  # pyright: ignore[reportUnknownMemberType] -- JAX reshape stubs are imprecise.
+        flat_energy: jax.Array = jnp.reshape(
             shifted_energy,
             (-1,),
         )
@@ -97,7 +95,7 @@ def pade_interpolate(
 
     return cast(
         Callable[[jax.Array | float], jax.Array],
-        jax.jit(evaluate),  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed.
+        jax.jit(evaluate),
     )
 
 
@@ -111,7 +109,7 @@ def _solve_pade_system(
 
     n_energies = shifted_knots.shape[0]
     dtype = jnp.result_type(samples, shifted_knots)
-    matrix: jax.Array = jnp.zeros(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
+    matrix: jax.Array = jnp.zeros(
         (n_energies, p + q + 1),
         dtype=dtype,
     )
@@ -124,7 +122,7 @@ def _solve_pade_system(
     rhs = -samples.astype(dtype)
     coefficients = cast(
         jax.Array,
-        jnp.linalg.solve(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+        jnp.linalg.solve(
             matrix,
             rhs,
         ),
@@ -132,7 +130,7 @@ def _solve_pade_system(
     a_coeffs: jax.Array = coefficients[: p + 1]
     b_coeffs: jax.Array = jnp.concatenate(
         (
-            jnp.ones(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
+            jnp.ones(
                 (1,),
                 dtype=coefficients.dtype,
             ),

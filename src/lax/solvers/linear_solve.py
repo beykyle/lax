@@ -97,7 +97,33 @@ def make_rmatrix_direct_kernel(
     energies: jax.Array,
     boundary: BoundaryValues | None,
 ) -> DirectRMatrixKernel:
-    """Build `rmatrix_direct(V) -> R(E)` on the compile-time energy grid. [DESIGN.md §11.3]"""
+    """Build a JIT-compiled ``rmatrix_direct(V) → R`` kernel for the compile-time grid.
+
+    The returned kernel solves ``C(E) X = Q`` for each compile-time energy via
+    ``jnp.linalg.solve``, bypassing the eigendecomposition.  Supports real and
+    complex potentials, local and non-local, propagated and non-propagated meshes.
+    [DESIGN.md §11.3]
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh; if ``mesh.propagation`` is not ``None``, a subinterval
+        propagation recursion is used instead of a global solve.
+    operators
+        Precomputed operator matrices (``TpL`` required).
+    channels
+        Channel definitions.
+    energies
+        Compile-time energy grid in MeV, shape ``(N_E,)``.
+    boundary
+        Compile-time boundary values for S-matrix matching, or ``None`` if only
+        the R-matrix is needed.
+
+    Returns
+    -------
+    DirectRMatrixKernel
+        JIT-compiled callable: ``kernel(V) → R`` with shape ``(N_E, N_c, N_c)``.
+    """
 
     q = build_Q(mesh, channels)
     channel_radius = mesh.scale
@@ -126,7 +152,32 @@ def make_rmatrix_direct_grid_observable(
     energies: jax.Array,
     boundary: BoundaryValues | None,
 ) -> DirectGridObservable:
-    """Build aligned-grid `R(E_i; V_i)` for energy-dependent direct workflows."""
+    """Build a JIT-compiled aligned-grid ``R(E_i; V_i)`` kernel.
+
+    For energy-dependent potentials: given a stack of potentials
+    ``V_grid[i]`` at compile-time energy ``E_i``, returns ``R[i]`` evaluated
+    with that exact ``(V_i, E_i)`` pairing — the physically correct aligned-grid
+    evaluation.
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh.
+    operators
+        Precomputed operator matrices.
+    channels
+        Channel definitions.
+    energies
+        Compile-time energy grid in MeV, shape ``(N_E,)``.
+    boundary
+        Compile-time boundary values, or ``None``.
+
+    Returns
+    -------
+    DirectGridObservable
+        JIT-compiled callable: ``kernel(V_grid) → R`` where ``V_grid`` has a
+        leading ``N_E`` axis and ``R`` has shape ``(N_E, N_c, N_c)``.
+    """
 
     q = build_Q(mesh, channels)
     channel_radius = mesh.scale
@@ -160,7 +211,25 @@ def _rmatrix_direct(
     mass_factor: float,
     boundary: BoundaryValues | None,
 ) -> jax.Array:
-    """Return the direct R-matrix across the compile-time energy grid."""
+    """Return the direct R-matrix across the compile-time energy grid.
+
+    Dispatches to the propagated or non-propagated path depending on
+    ``mesh.propagation``, and to the local or non-local potential path
+    depending on ``potential.ndim``.
+
+    Parameters
+    ----------
+    potential
+        Assembled potential in MeV.  Local: ``(N_c, N_c, N)``; non-local:
+        ``(N_c, N_c, N, N)``.
+    mesh, operators, channels, energies, q, channel_radius, matrix_size, mass_factor, boundary
+        Compile-time cached data forwarded from the kernel dataclass.
+
+    Returns
+    -------
+    jax.Array
+        R-matrix on the compile-time energy grid, shape ``(N_E, N_c, N_c)``.
+    """
 
     if mesh.propagation is not None and potential.ndim == 3:
         if boundary is None:
@@ -185,9 +254,7 @@ def _rmatrix_direct(
                 mass_factor,
             )
 
-        result: jax.Array = jax.vmap(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
-            propagated_one_energy
-        )(
+        result: jax.Array = jax.vmap(propagated_one_energy)(
             energies,
             boundary.H_plus,
             boundary.H_plus_p,
@@ -212,13 +279,13 @@ def _rmatrix_direct(
 
     def one_energy(energy: jax.Array) -> jax.Array:
         energy_dimless = energy / mass_factor
-        matrix = hamiltonian - energy_dimless * jnp.eye(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
+        matrix = hamiltonian - energy_dimless * jnp.eye(
             matrix_size,
             dtype=hamiltonian.dtype,
         )
         solved = cast(
             jax.Array,
-            jnp.linalg.solve(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+            jnp.linalg.solve(
                 matrix,
                 q,
             ),
@@ -226,9 +293,7 @@ def _rmatrix_direct(
         values: jax.Array = (q.T @ solved) / channel_radius
         return values
 
-    result: jax.Array = jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
-        energies
-    )
+    result: jax.Array = jax.vmap(one_energy)(energies)
     return result
 
 
@@ -244,7 +309,25 @@ def _rmatrix_direct_grid(
     mass_factor: float,
     boundary: BoundaryValues | None,
 ) -> jax.Array:
-    """Return aligned-grid `R(E_i; V_i)` samples for energy-dependent potentials."""
+    """Return aligned-grid ``R(E_i; V_i)`` samples for energy-dependent potentials.
+
+    Evaluates each ``(V_i, E_i)`` pair independently — the diagonal of the
+    ``(N_E, N_E)`` Cartesian product — so the result is physically correct for
+    potentials that depend on energy.
+
+    Parameters
+    ----------
+    potentials
+        Per-energy potentials in MeV.  Local: ``(N_E, N_c, N_c, N)``; non-local:
+        ``(N_E, N_c, N_c, N, N)``.
+    mesh, operators, channels, energies, q, channel_radius, matrix_size, mass_factor, boundary
+        Compile-time cached data.
+
+    Returns
+    -------
+    jax.Array
+        R-matrix samples, shape ``(N_E, N_c, N_c)``.
+    """
 
     if mesh.propagation is not None and potentials.ndim == 4:
         if boundary is None:
@@ -270,9 +353,7 @@ def _rmatrix_direct_grid(
                 mass_factor,
             )
 
-        result: jax.Array = jax.vmap(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
-            propagated_one_energy
-        )(
+        result: jax.Array = jax.vmap(propagated_one_energy)(
             potentials,
             energies,
             boundary.H_plus,
@@ -297,20 +378,20 @@ def _rmatrix_direct_grid(
             potential,
         )
         energy_dimless = energy / mass_factor
-        matrix = hamiltonian - energy_dimless * jnp.eye(  # pyright: ignore[reportUnknownMemberType] -- JAX array constructors have imprecise stubs.
+        matrix = hamiltonian - energy_dimless * jnp.eye(
             matrix_size,
             dtype=hamiltonian.dtype,
         )
         solved = cast(
             jax.Array,
-            jnp.linalg.solve(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+            jnp.linalg.solve(
                 matrix,
                 q,
             ),
         )
         return (q.T @ solved) / channel_radius
 
-    return jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+    return jax.vmap(one_energy)(
         potentials,
         energies,
     )
@@ -326,7 +407,38 @@ def _propagated_rmatrix_at_energy(
     is_open: jax.Array,
     mass_factor: float,
 ) -> jax.Array:
-    """Return the propagated effective R-matrix at one energy."""
+    """Return the propagated effective R-matrix at one energy.
+
+    Implements the Descouvemont R-matrix subinterval propagation algorithm:
+    the internal region is divided into ``n_intervals`` subintervals; the
+    local R-matrix for each interval is computed by a direct solve, then
+    matched at the shared boundary using the Bloch overlap matrices ``blo0``,
+    ``blo1``, ``blo2`` until the effective R-matrix at the outer surface is
+    obtained.
+
+    Parameters
+    ----------
+    potential
+        Local potential in MeV, shape ``(N_c, N_c, N)``.
+    propagation
+        Precomputed subinterval matrices from :class:`PropagationMatrices`.
+    channels
+        Channel definitions.
+    energy
+        Scalar energy in MeV.
+    h_plus, h_plus_p
+        Outgoing Coulomb/Whittaker function and its derivative at the channel
+        surface, shape ``(N_c,)``.
+    is_open
+        Boolean mask for open channels, shape ``(N_c,)``.
+    mass_factor
+        ℏ²/2μ in MeV·fm².
+
+    Returns
+    -------
+    jax.Array
+        Effective R-matrix, shape ``(N_c, N_c)``.
+    """
 
     nr = propagation.basis_size_per_interval
     ns = propagation.n_intervals
@@ -341,23 +453,23 @@ def _propagated_rmatrix_at_energy(
     blo1 = propagation.blo1.astype(dtype)
     blo2 = propagation.blo2.astype(dtype)
     local_nodes = propagation.local_nodes.astype(dtype)
-    closed_ratio = jnp.where(  # pyright: ignore[reportUnknownMemberType] -- JAX where stubs are imprecise.
+    closed_ratio = jnp.where(
         is_open,
-        jnp.zeros_like(h_plus, dtype=dtype),  # pyright: ignore[reportUnknownMemberType] -- JAX zeros_like stubs are imprecise.
-        (h_plus_p / h_plus).astype(dtype),
+        jnp.zeros_like(h_plus, dtype=dtype),
+        jnp.real(h_plus_p / h_plus).astype(dtype),
     )
     thresholds = np.asarray([channel.threshold for channel in channels], dtype=np.float64)
-    threshold_array: jax.Array = jnp.asarray(  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    threshold_array: jax.Array = jnp.asarray(
         thresholds,
         dtype=dtype,
     )
     qk_sq = jnp.abs((energy - threshold_array) / mass_factor)
 
-    crma0 = jnp.zeros((channel_count, channel_count), dtype=dtype)  # pyright: ignore[reportUnknownMemberType] -- JAX zeros stubs are imprecise.
+    crma0 = jnp.zeros((channel_count, channel_count), dtype=dtype)
     for interval_index in range(ns):
         interval_start = interval_index * nr
         interval_stop = interval_start + nr
-        interval_matrix: jax.Array = jnp.zeros(  # pyright: ignore[reportUnknownMemberType] -- JAX zeros stubs are imprecise.
+        interval_matrix: jax.Array = jnp.zeros(
             (matrix_size, matrix_size),
             dtype=dtype,
         )
@@ -374,9 +486,9 @@ def _propagated_rmatrix_at_energy(
             diagonal_block = kinetic[interval_index]
             diagonal_block = diagonal_block + (
                 channel.l * (channel.l + 1) / (interval_positions**2)
-            ) * jnp.eye(nr, dtype=dtype)  # pyright: ignore[reportUnknownMemberType] -- JAX eye stubs are imprecise.
+            ) * jnp.eye(nr, dtype=dtype)
             sign = jnp.where(is_open[channel_index], -1.0, 1.0).astype(dtype)
-            diagonal_block = diagonal_block + sign * qk_sq[channel_index] * jnp.eye(  # pyright: ignore[reportUnknownMemberType] -- JAX eye stubs are imprecise.
+            diagonal_block = diagonal_block + sign * qk_sq[channel_index] * jnp.eye(
                 nr,
                 dtype=dtype,
             )
@@ -385,7 +497,7 @@ def _propagated_rmatrix_at_energy(
             for coupled_index in range(channel_count):
                 column = coupled_index * nr
                 column_slice = slice(column, column + nr)
-                block = jnp.zeros((nr, nr), dtype=dtype)  # pyright: ignore[reportUnknownMemberType] -- JAX zeros stubs are imprecise.
+                block = jnp.zeros((nr, nr), dtype=dtype)
                 if channel_index == coupled_index:
                     block = block + diagonal_block
                 block = block + jnp.diag(
@@ -398,11 +510,11 @@ def _propagated_rmatrix_at_energy(
         q2_matrix = _surface_projector(channel_count, nr, local_q2[interval_index], dtype)
         solved_q1 = cast(
             jax.Array,
-            jnp.linalg.solve(interval_matrix, q1_matrix),  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+            jnp.linalg.solve(interval_matrix, q1_matrix),
         )
         solved_q2 = cast(
             jax.Array,
-            jnp.linalg.solve(interval_matrix, q2_matrix),  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+            jnp.linalg.solve(interval_matrix, q2_matrix),
         )
         crma_11 = q2_matrix.T @ solved_q2
         crma_12 = q1_matrix.T @ solved_q2
@@ -413,7 +525,7 @@ def _propagated_rmatrix_at_energy(
             boundary_matrix = crma_22 + crma0 * (interval_index * interval_width)
             correction = cast(
                 jax.Array,
-                jnp.linalg.solve(boundary_matrix, crma_12),  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+                jnp.linalg.solve(boundary_matrix, crma_12),
             )
             crma0 = (crma_11 - crma_12.T @ correction) / ((interval_index + 1) * interval_width)
 
@@ -428,7 +540,7 @@ def _surface_projector(
 ) -> jax.Array:
     """Return the per-interval surface projector used by the propagation recursion."""
 
-    projector: jax.Array = jnp.zeros(  # pyright: ignore[reportUnknownMemberType] -- JAX zeros stubs are imprecise.
+    projector: jax.Array = jnp.zeros(
         (channel_count * basis_size_per_interval, channel_count),
         dtype=dtype,
     )
@@ -439,11 +551,11 @@ def _surface_projector(
     return projector
 
 
-_RMATRIX_DIRECT_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_RMATRIX_DIRECT_JIT = jax.jit(
     _rmatrix_direct,
     static_argnames=("channels", "matrix_size"),
 )
-_RMATRIX_DIRECT_GRID_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_RMATRIX_DIRECT_GRID_JIT = jax.jit(
     _rmatrix_direct_grid,
     static_argnames=("channels", "matrix_size"),
 )

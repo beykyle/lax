@@ -88,7 +88,14 @@ class _PhasesObservable:
     mass_factor: float
 
     def __call__(self, spectrum: Spectrum) -> jax.Array:
-        """Evaluate the phase shifts on the compile-time energy grid."""
+        """Evaluate the phase shifts on the compile-time energy grid.
+
+        Returns
+        -------
+        jax.Array
+            Shape ``(N_E, N_c)`` in radians.  For a single-channel solver use
+            ``result[:, 0]`` to obtain a 1-D energy curve.
+        """
 
         return cast(
             jax.Array,
@@ -135,10 +142,16 @@ class _WavefunctionObservable:
 class _EigenpairAccessor:
     """Pickle-safe accessor for raw eigensystem data."""
 
-    def __call__(self, spectrum: Spectrum) -> tuple[jax.Array, jax.Array | None]:
-        """Return the stored eigenvalues and optional eigenvectors."""
+    def __call__(self, spectrum: Spectrum) -> tuple[jax.Array, jax.Array]:
+        """Return the stored eigenvalues and eigenvectors.
 
-        return cast(tuple[jax.Array, jax.Array | None], _EIGH_JIT(spectrum))
+        Raises
+        ------
+        RuntimeError
+            If eigenvectors were not retained at compile time.
+        """
+
+        return cast(tuple[jax.Array, jax.Array], _EIGH_JIT(spectrum))
 
 
 @dataclass(frozen=True)
@@ -470,7 +483,27 @@ def _smatrix(
     channel_radius: float,
     mass_factor: float,
 ) -> jax.Array:
-    """Return the compile-time energy-grid S-matrix."""
+    """Return the S-matrix on the compile-time energy grid.
+
+    Vectorises the R-matrix spectral sum and the channel matching over the
+    full compile-time energy grid via ``jax.vmap``.
+
+    Parameters
+    ----------
+    spectrum
+        Stored eigenpairs of the Bloch-augmented Hamiltonian.
+    energies
+        Compile-time energy grid in MeV, shape ``(N_E,)``.
+    boundary
+        Compile-time boundary values, shape ``(N_E, N_c)`` per field.
+    channel_radius, mass_factor
+        Channel radius in fm and ℏ²/2μ in MeV·fm².
+
+    Returns
+    -------
+    jax.Array
+        S-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``.
+    """
 
     wave_numbers = _boundary_wave_numbers(boundary)
 
@@ -486,7 +519,7 @@ def _smatrix(
         r = _rmatrix(spectrum, energy, channel_radius, mass_factor)
         return _match_one_energy(r, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
 
-    result: jax.Array = jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+    result: jax.Array = jax.vmap(one_energy)(
         energies,
         boundary.H_plus,
         boundary.H_minus,
@@ -507,7 +540,7 @@ def _phases(
 ) -> jax.Array:
     """Return the compile-time energy-grid phase shifts."""
 
-    return jax.vmap(phases_from_S)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+    return jax.vmap(phases_from_S)(
         _smatrix(spectrum, energies, boundary, channel_radius, mass_factor)
     )
 
@@ -534,9 +567,21 @@ def _wavefunction(
     )
 
 
-def _eigh(spectrum: Spectrum) -> tuple[jax.Array, jax.Array | None]:
-    """Return the stored eigenvalues and optional eigenvectors."""
+def _eigh(spectrum: Spectrum) -> tuple[jax.Array, jax.Array]:
+    """Return the stored eigenvalues and eigenvectors.
 
+    Raises
+    ------
+    RuntimeError
+        If eigenvectors were not retained at compile time.  Re-compile with
+        ``'greens'`` or ``'wavefunction'`` in ``solvers=`` to keep them.
+    """
+
+    if spectrum.eigenvectors is None:
+        raise RuntimeError(
+            "Eigenvectors were not retained at compile time. "
+            "Re-compile with 'greens' or 'wavefunction' in solvers= to keep them."
+        )
     return spectrum.eigenvalues, spectrum.eigenvectors
 
 
@@ -551,7 +596,7 @@ def _rmatrix_grid(
     def one_energy(spectrum: Spectrum, energy: jax.Array) -> jax.Array:
         return _rmatrix(spectrum, energy, channel_radius, mass_factor)
 
-    return jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+    return jax.vmap(one_energy)(
         spectra,
         energies,
     )
@@ -581,7 +626,7 @@ def _smatrix_grid(
         r = _rmatrix(spectrum, energy, channel_radius, mass_factor)
         return _match_one_energy(r, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
 
-    return jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+    return jax.vmap(one_energy)(
         spectra,
         energies,
         boundary.H_plus,
@@ -602,7 +647,7 @@ def _phases_grid(
 ) -> jax.Array:
     """Return aligned-grid `δ(E_i; spec_i)` samples."""
 
-    return jax.vmap(phases_from_S)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+    return jax.vmap(phases_from_S)(
         _smatrix_grid(spectra, energies, boundary, channel_radius, mass_factor)
     )
 
@@ -623,7 +668,7 @@ def _direct_smatrix_grid(rmatrix_grid: jax.Array, boundary: BoundaryValues) -> j
     ) -> jax.Array:
         return _match_one_energy(rmatrix, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
 
-    return jax.vmap(one_energy)(  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+    return jax.vmap(one_energy)(
         rmatrix_grid,
         boundary.H_plus,
         boundary.H_minus,
@@ -637,48 +682,44 @@ def _direct_smatrix_grid(rmatrix_grid: jax.Array, boundary: BoundaryValues) -> j
 def _direct_phases_grid(smatrix_grid: jax.Array) -> jax.Array:
     """Return aligned-grid `δ(E_i; V_i)` samples from direct S-matrices."""
 
-    return jax.vmap(phases_from_S)(smatrix_grid)  # pyright: ignore[reportUnknownMemberType] -- JAX vmap wrappers are not precisely typed.
+    return jax.vmap(phases_from_S)(smatrix_grid)
 
 
-_RMATRIX_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_RMATRIX_JIT = jax.jit(
     _rmatrix,
     static_argnames=("channel_radius", "mass_factor"),
 )
-_SMATRIX_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_SMATRIX_JIT = jax.jit(
     _smatrix,
     static_argnames=("channel_radius", "mass_factor"),
 )
-_PHASES_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_PHASES_JIT = jax.jit(
     _phases,
     static_argnames=("channel_radius", "mass_factor"),
 )
-_GREENS_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_GREENS_JIT = jax.jit(
     _greens,
     static_argnames=("mass_factor",),
 )
-_WAVEFUNCTION_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_WAVEFUNCTION_JIT = jax.jit(
     _wavefunction,
     static_argnames=("mass_factor",),
 )
-_EIGH_JIT = jax.jit(_eigh)  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-_RMATRIX_GRID_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_EIGH_JIT = jax.jit(_eigh)
+_RMATRIX_GRID_JIT = jax.jit(
     _rmatrix_grid,
     static_argnames=("channel_radius", "mass_factor"),
 )
-_SMATRIX_GRID_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_SMATRIX_GRID_JIT = jax.jit(
     _smatrix_grid,
     static_argnames=("channel_radius", "mass_factor"),
 )
-_PHASES_GRID_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
+_PHASES_GRID_JIT = jax.jit(
     _phases_grid,
     static_argnames=("channel_radius", "mass_factor"),
 )
-_DIRECT_SMATRIX_GRID_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-    _direct_smatrix_grid
-)
-_DIRECT_PHASES_GRID_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-    _direct_phases_grid
-)
+_DIRECT_SMATRIX_GRID_JIT = jax.jit(_direct_smatrix_grid)
+_DIRECT_PHASES_GRID_JIT = jax.jit(_direct_phases_grid)
 
 
 def _decouple_closed_channels(
@@ -690,14 +731,14 @@ def _decouple_closed_channels(
     """Fold closed-channel Whittaker boundary conditions into an effective R-matrix."""
 
     bloch = _closed_channel_bloch(h_plus, h_plus_p, is_open)
-    identity: jax.Array = jnp.eye(  # pyright: ignore[reportUnknownMemberType] -- JAX eye stubs are imprecise.
+    identity: jax.Array = jnp.eye(
         rmatrix.shape[0],
         dtype=rmatrix.dtype,
     )
     correction = identity - rmatrix @ jnp.diag(bloch)
     return cast(
         jax.Array,
-        jnp.linalg.solve(  # pyright: ignore[reportUnknownMemberType] -- JAX linalg solve stubs lose the result type here.
+        jnp.linalg.solve(
             correction.T,
             rmatrix.T,
         ).T,
@@ -751,12 +792,36 @@ def _project_open_channels(
     is_open: jax.Array,
     k: jax.Array | None,
 ) -> tuple[jax.Array, BoundaryValues]:
-    """Project the decoupled system onto the open-channel S-matrix with fixed shapes."""
+    """Project the decoupled R-matrix and boundary values onto the open-channel subspace.
+
+    Closed-channel rows and columns of R are zeroed via an ``is_open`` mask,
+    and the corresponding Hankel function entries are replaced by 1 in
+    ``H_plus`` (to avoid divide-by-zero in the matching formula) and by 0 in
+    ``H_minus``, ``H_plus_p``, and ``H_minus_p``.  The shapes remain
+    ``(N_c, N_c)`` / ``(N_c,)`` so JAX sees static shapes inside JIT.
+
+    Parameters
+    ----------
+    rmatrix
+        Full channel-space R-matrix, shape ``(N_c, N_c)``.
+    h_plus, h_minus, h_plus_p, h_minus_p
+        Boundary value arrays, shape ``(N_c,)``, complex.
+    is_open
+        Boolean mask for open channels, shape ``(N_c,)``.
+    k
+        Wave numbers in fm⁻¹, shape ``(N_c,)``, or ``None``.
+
+    Returns
+    -------
+    tuple[jax.Array, BoundaryValues]
+        Masked R-matrix and masked boundary slice for use in
+        :func:`smatrix_from_R`.
+    """
 
     mask = is_open.astype(rmatrix.dtype)
     projected_r = rmatrix * mask[:, None] * mask[None, :]
     closed_dtype = h_plus.dtype
-    ones: jax.Array = jnp.ones_like(  # pyright: ignore[reportUnknownMemberType] -- JAX ones_like stubs are imprecise.
+    ones: jax.Array = jnp.ones_like(
         h_plus,
         dtype=closed_dtype,
     )
@@ -764,7 +829,7 @@ def _project_open_channels(
     if k is None:
         k_values = None
     else:
-        ones_k: jax.Array = jnp.ones_like(k, dtype=k.dtype)  # pyright: ignore[reportUnknownMemberType] -- JAX ones_like stubs are imprecise.
+        ones_k: jax.Array = jnp.ones_like(k, dtype=k.dtype)
         k_values = k * is_open.astype(k.dtype) + ones_k * (1 - is_open.astype(k.dtype))
 
     boundary_slice = BoundaryValues(
@@ -786,11 +851,9 @@ def _closed_channel_bloch(
     """Return the closed-channel Bloch boundary parameter `B_c = H'_c / H_c`."""
 
     ratio = h_plus_p / h_plus
-    closed_mask = jnp.logical_not(is_open)  # pyright: ignore[reportUnknownMemberType] -- JAX logical_not stubs are imprecise.
-    zeros: jax.Array = jnp.zeros_like(  # pyright: ignore[reportUnknownMemberType] -- JAX zeros_like stubs are imprecise.
-        ratio
-    )
-    return jnp.where(  # pyright: ignore[reportUnknownMemberType] -- JAX where stubs are imprecise.
+    closed_mask = jnp.logical_not(is_open)
+    zeros: jax.Array = jnp.zeros_like(ratio)
+    return jnp.where(
         closed_mask,
         ratio,
         zeros,
@@ -802,7 +865,7 @@ def _boundary_wave_numbers(boundary: BoundaryValues) -> jax.Array:
 
     if boundary.k is not None:
         return boundary.k
-    return jnp.ones_like(  # pyright: ignore[reportUnknownMemberType] -- JAX ones_like stubs are imprecise.
+    return jnp.ones_like(
         boundary.is_open,
         dtype=jnp.float64,
     )

@@ -42,7 +42,7 @@ def rmatrix_from_spectrum(
     surface_amplitudes = spectrum.surface_amplitudes
     denominator = _spectral_denominator(spectrum, energy, mass_factor)
     matrix: jax.Array = (
-        jnp.einsum(  # pyright: ignore[reportUnknownMemberType] -- JAX exposes an imprecise overloaded stub for einsum.
+        jnp.einsum(
             "m,mc,md->cd",
             denominator,
             surface_amplitudes,
@@ -108,7 +108,17 @@ def wavefunction_internal_from_spectrum(
     energy
         Physical energy in MeV.
     source
-        Mesh-space source vector multiplied by the Green's function.
+        Mesh-space source vector of shape ``(N_c · N,)``.  Following
+        Descouvemont [2] eq. 27, for a reaction driven by an incoming wave in
+        channel ``c`` at energy ``E_i``:
+
+        .. code-block:: python
+
+            source[c*N : (c+1)*N] = basis_at_boundary * H_minus[E_i, c]
+            # all other blocks are zero
+
+        Use :func:`lax.make_wavefunction_source` to build this automatically
+        from a compiled :class:`~lax.Solver`.
     mass_factor
         Conversion factor ``ℏ² / 2μ`` in MeV fm².
 

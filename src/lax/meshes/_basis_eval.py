@@ -7,7 +7,7 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.special as sc  # pyright: ignore[reportMissingTypeStubs] -- SciPy does not currently ship complete type stubs for special.
+import scipy.special as sc
 from numpy.polynomial import Legendre
 
 from lax.boundary._types import Mesh
@@ -20,7 +20,22 @@ _BASIS_EVALUATORS: dict[tuple[str, str], BasisEvaluator] = {}
 def register_basis_evaluator(
     family: str, regularization: str
 ) -> Callable[[BasisEvaluator], BasisEvaluator]:
-    """Register a basis evaluator for one mesh family/regularization pair."""
+    """Register a basis evaluator for one mesh family/regularization pair.
+
+    Use as a decorator on the evaluator function.
+
+    Parameters
+    ----------
+    family
+        Mesh family identifier, e.g. ``"legendre"``.
+    regularization
+        Regularization identifier, e.g. ``"x"``.
+
+    Returns
+    -------
+    Callable[[BasisEvaluator], BasisEvaluator]
+        Decorator that registers and returns the evaluator unchanged.
+    """
 
     def decorator(function: BasisEvaluator) -> BasisEvaluator:
         key = (family, regularization)
@@ -34,7 +49,26 @@ def register_basis_evaluator(
 
 
 def basis_at(mesh: Mesh, radii: jax.Array) -> jax.Array:
-    """Evaluate mesh basis functions at one-dimensional physical radii."""
+    """Evaluate mesh basis functions at one-dimensional physical radii.
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh whose ``(family, regularization)`` pair selects the
+        appropriate evaluator.
+    radii
+        Physical radii in fm, shape ``(M_r,)``.
+
+    Returns
+    -------
+    jax.Array
+        Basis function values ``f_j(r_k)``, shape ``(M_r, N)``.
+
+    Raises
+    ------
+    ValueError
+        If ``radii`` is not 1-D, or no evaluator is registered for the mesh.
+    """
 
     radii_np = np.asarray(radii, dtype=np.float64)
     if radii_np.ndim != 1:
@@ -47,7 +81,7 @@ def basis_at(mesh: Mesh, radii: jax.Array) -> jax.Array:
         raise ValueError(msg)
 
     values = _BASIS_EVALUATORS[key](mesh, radii_np)
-    array: jax.Array = jnp.asarray(values)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    array: jax.Array = jnp.asarray(values)
     return array
 
 

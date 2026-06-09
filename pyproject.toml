@@ -99,9 +99,20 @@ src = ["src"]
 select = ["E", "F", "W", "I", "UP"]
 ignore = ["E501", "E741"]
 
+[tool.ruff.lint.per-file-ignores]
+# jax.config.update must run before any JAX import, so all subsequent
+# imports in __init__.py are necessarily E402.
+"src/lax/__init__.py" = ["E402"]
+
 [tool.pyright]
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"
 include = ["src"]
 typeCheckingMode = "strict"
+# JAX, scipy, and mpmath ship incomplete type stubs.  The downstream effect
+# is ~110 reportUnknownMemberType and ~5 reportMissingTypeStubs errors that
+# are all third-party stub gaps, not bugs in this library.  Suppress them
+# at config level rather than carrying ~115 identical inline comments.
+reportUnknownMemberType = "none"
+reportMissingTypeStubs = "none"

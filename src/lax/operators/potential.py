@@ -15,7 +15,25 @@ def assemble_local(
     potential_fn: Callable[..., jax.Array],
     n_channels: int = 1,
 ) -> jax.Array:
-    """Assemble a local potential sampled on the mesh radii."""
+    """Assemble a local potential sampled on the mesh radii.
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh (``solver.mesh``).
+    potential_fn
+        For single-channel: ``potential_fn(radii) -> (N,)`` array of potential
+        values in MeV.  For coupled-channel: ``potential_fn(radii, c, c') ->
+        (N,)`` array for the ``(c, c')`` block.
+    n_channels
+        Number of coupled channels ``N_c``.
+
+    Returns
+    -------
+    jax.Array
+        Shape ``(N_c, N_c, N)`` where ``N = mesh.n``.  Pass directly to
+        ``solver.spectrum(V)`` or ``solver.rmatrix_direct(V)``.
+    """
 
     radii = mesh.radii
     if n_channels == 1:
@@ -37,7 +55,29 @@ def assemble_nonlocal(
     kernel_fn: Callable[..., jax.Array],
     n_channels: int = 1,
 ) -> jax.Array:
-    """Assemble a Gauss-scaled non-local potential on the mesh."""
+    """Assemble a Gauss-scaled non-local potential on the mesh.
+
+    Applies the Gauss-quadrature weight scaling ``(λ_i λ_j)^{1/2} · a``
+    required by the Lagrange-mesh non-local matrix element formula
+    [Descouvemont eq. 26].
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh (``solver.mesh``).
+    kernel_fn
+        For single-channel: ``kernel_fn(r_i, r_j) -> (N, N)`` kernel values in
+        MeV.  For coupled-channel: ``kernel_fn(r_i, r_j, c, c') -> (N, N)``
+        for the ``(c, c')`` block.
+    n_channels
+        Number of coupled channels ``N_c``.
+
+    Returns
+    -------
+    jax.Array
+        Shape ``(N_c, N_c, N, N)`` where ``N = mesh.n``.  Pass directly to
+        ``solver.spectrum(V)`` or ``solver.rmatrix_direct(V)``.
+    """
 
     if mesh.propagation is not None:
         msg = (
@@ -49,8 +89,8 @@ def assemble_nonlocal(
 
     radii = mesh.radii
     weights = mesh.weights
-    radius_i, radius_j = jnp.meshgrid(radii, radii, indexing="ij")  # pyright: ignore[reportUnknownMemberType] -- JAX stubs for meshgrid are imprecise.
-    weight_i, weight_j = jnp.meshgrid(weights, weights, indexing="ij")  # pyright: ignore[reportUnknownMemberType] -- JAX stubs for meshgrid are imprecise.
+    radius_i, radius_j = jnp.meshgrid(radii, radii, indexing="ij")
+    weight_i, weight_j = jnp.meshgrid(weights, weights, indexing="ij")
     scale = jnp.sqrt(weight_i * weight_j) * mesh.scale
 
     if n_channels == 1:

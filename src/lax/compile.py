@@ -126,6 +126,10 @@ def compile(
 ) -> Solver:
     """Build a compiled solver bundle for one mesh/channel definition.
 
+    .. note::
+        ``lax.compile`` shadows Python's built-in ``compile``.  Avoid
+        ``from lax import compile`` in modules that also use the built-in.
+
     Parameters
     ----------
     mesh
@@ -137,13 +141,22 @@ def compile(
         Compile-time operator matrices to precompute. ``"T+L"`` is injected
         automatically whenever the requested solver path needs it.
     solvers
-        Runtime entry points to expose on the returned :class:`~lax.boundary._types.Solver`.
+        Runtime entry points to expose on the returned :class:`~lax.Solver`.
+        The potential passed to ``solver.spectrum(V)`` or
+        ``solver.rmatrix_direct(V)`` must have shape ``(N_c, N_c, N)`` for a
+        local potential or ``(N_c, N_c, N, N)`` for a non-local kernel, where
+        ``N = mesh.n`` and ``N_c = len(channels)``.  Use
+        :func:`lax.assemble_local` / :func:`lax.assemble_nonlocal` to build
+        these arrays.
     energies
         Compile-time energy grid used for boundary-value-dependent observables and
         aligned-grid workflows.
     energy_dependent
         Whether the caller intends to provide an energy-dependent potential on the
-        compile-time energy grid.
+        compile-time energy grid.  When ``True``, call
+        ``jax.vmap(solver.spectrum)(V_grid)`` over the energy axis to get a
+        batched ``Spectrum``, then use ``solver.phases_grid(spectra)`` and the
+        ``solver.interpolate_*`` builders for off-grid evaluation.
     method
         Explicit solver method. When omitted, the method is chosen from
         ``V_is_complex`` and the active JAX backend.
@@ -151,8 +164,10 @@ def compile(
         Whether the potential path is complex-valued.
     grid
         Optional radial grid used to precompute mesh-to-grid transforms.
+        Accessible afterward as ``solver.grid_r``.
     momenta
         Optional momentum grid used to precompute Fourier transforms.
+        Accessible afterward as ``solver.momenta``.
     z1z2
         Optional pair of charges passed to compile-time boundary-value evaluation.
     dps
@@ -567,7 +582,7 @@ def _assemble_solver(
 def _to_jax_array(values: np.ndarray) -> jax.Array:
     """Convert compile-time NumPy data to an explicitly typed JAX array."""
 
-    array: jax.Array = jnp.asarray(values)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    array: jax.Array = jnp.asarray(values)
     return array
 
 

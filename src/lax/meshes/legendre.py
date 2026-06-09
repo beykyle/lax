@@ -20,7 +20,32 @@ def build_legendre_x(
     operators: set[str],
     **extras: object,
 ) -> tuple[Mesh, OperatorMatrices]:
-    """Build shifted Legendre-x mesh data. [Desc. eqs. 22-24]"""
+    """Build shifted Legendre-x mesh data on ``(0, a)``.
+
+    Implements the R-matrix workhorse mesh regularized by ``x`` (ν = 1).
+    Nodes are the Legendre zeros on ``(0, 1)`` scaled by ``a``; the
+    kinetic matrix is the Bloch-augmented ``T + L(B=0)`` from
+    Descouvemont eqs. 22–24.
+
+    Parameters
+    ----------
+    n
+        Number of basis functions.
+    scale
+        Channel radius ``a`` in fm.
+    operators
+        Set of operator strings to precompute.  Supported:
+        ``"T+L"``, ``"1/r"``, ``"1/r^2"``, ``"D"``.
+        ``"T+L"`` is always built; others are optional.
+    **extras
+        ``n_intervals`` (int, default 1) — number of subintervals for
+        R-matrix propagation; 1 means no propagation.
+
+    Returns
+    -------
+    tuple[Mesh, OperatorMatrices]
+        Compiled mesh and precomputed operator matrices.
+    """
 
     raw_n_intervals = extras.pop("n_intervals", 1)
     if not isinstance(raw_n_intervals, int):
@@ -92,7 +117,31 @@ def _build_legendre_x_propagated(
     n_intervals: int,
     operators: set[str],
 ) -> tuple[Mesh, OperatorMatrices]:
-    """Build the compile-time data needed for propagated shifted Legendre-x solves."""
+    """Build compile-time data for a propagated shifted Legendre-x mesh.
+
+    Delegates to :func:`lax.propagate.build_legendre_x_propagation` to
+    compute the per-interval kinetic and boundary-overlap matrices, then
+    packs them into a :class:`Mesh` with ``n_intervals > 1``.
+
+    Parameters
+    ----------
+    n
+        Basis functions per subinterval.
+    scale
+        Total channel radius ``a`` in fm.
+    n_intervals
+        Number of subintervals.
+    operators
+        Set of operator strings; only ``"T+L"`` is supported for propagated
+        meshes.
+
+    Returns
+    -------
+    tuple[Mesh, OperatorMatrices]
+        Compiled mesh with non-trivial ``propagation`` field, and an
+        empty ``OperatorMatrices`` (operators are stored per-interval in
+        ``PropagationMatrices``).
+    """
 
     _validate_propagated_operator_requests(operators)
     propagation = build_legendre_x_propagation(
@@ -110,7 +159,7 @@ def _build_legendre_x_propagated(
     weights = jnp.tile(propagation.local_weights, n_intervals)
     boundary = jnp.concatenate(
         [
-            jnp.zeros(  # pyright: ignore[reportUnknownMemberType] -- JAX zeros stubs are imprecise.
+            jnp.zeros(
                 n * (n_intervals - 1),
                 dtype=propagation.q2.dtype,
             ),
@@ -172,7 +221,27 @@ def build_legendre_x_one_minus_x(
     operators: set[str],
     **extras: object,
 ) -> tuple[Mesh, OperatorMatrices]:
-    """Build shifted-Legendre-x(1-x) mesh data. [Baye eqs. 3.138, 3.142-3.144]"""
+    """Build shifted Legendre-``x(1-x)`` mesh data on ``(0, a)``.
+
+    Regularized by ``x(1-x)`` so the basis vanishes at both endpoints —
+    suitable for confined systems.  [Baye eqs. 3.138, 3.142–3.144]
+
+    Parameters
+    ----------
+    n
+        Number of basis functions.
+    scale
+        Interval length ``a`` in fm.
+    operators
+        Set of operator strings to precompute.  Supported: ``"T+L"``.
+    **extras
+        Currently unused; reserved for future operator extensions.
+
+    Returns
+    -------
+    tuple[Mesh, OperatorMatrices]
+        Compiled mesh and precomputed operator matrices.
+    """
 
     del extras
     a = float(scale)
@@ -215,7 +284,27 @@ def build_legendre_x_three_halves(
     operators: set[str],
     **extras: object,
 ) -> tuple[Mesh, OperatorMatrices]:
-    """Build shifted-Legendre-x^3/2 mesh data. [Baye eqs. 3.130, 3.136, 3.137]"""
+    """Build shifted Legendre-``x^{3/2}`` mesh data on ``(0, a)``.
+
+    Regularized by ``x^{3/2}`` for hyperspherical and hyperradial
+    coordinate systems.  [Baye eqs. 3.130, 3.136–3.137]
+
+    Parameters
+    ----------
+    n
+        Number of basis functions.
+    scale
+        Interval length ``a`` in fm.
+    operators
+        Set of operator strings to precompute.  Supported: ``"T+L"``.
+    **extras
+        Currently unused; reserved for future operator extensions.
+
+    Returns
+    -------
+    tuple[Mesh, OperatorMatrices]
+        Compiled mesh and precomputed operator matrices.
+    """
 
     del extras
     a = float(scale)
@@ -393,7 +482,7 @@ def _legendre_x_three_halves_t_plus_l(nodes: np.ndarray, scale: float) -> np.nda
 def _to_jax_array(values: np.ndarray) -> jax.Array:
     """Convert a NumPy array to a runtime JAX array with an explicit type."""
 
-    array: jax.Array = jnp.asarray(values)  # pyright: ignore[reportUnknownMemberType] -- JAX stubs expose asarray imprecisely for NumPy inputs.
+    array: jax.Array = jnp.asarray(values)
     return array
 
 

@@ -71,7 +71,12 @@ class ChannelSpec:
         Channel threshold in MeV. Assembly code converts it to fm^-2 using
         ``mass_factor``.
     mass_factor
-        Conversion factor ``ℏ² / 2μ`` in MeV fm².
+        Conversion factor ``ℏ² / 2μ`` in MeV·fm².  Defaults to ``1.0``,
+        which is physically meaningless for any real nucleus — always set
+        this explicitly.  Use :func:`lax.constants.hbar2_over_2mu` to
+        compute the correct value from particle masses in AMU, e.g.
+        ``lax.constants.hbar2_over_2mu(1.008665, 1.008665)`` ≈ 41.47 MeV·fm²
+        for nucleon–nucleon systems.
     """
 
     l: int

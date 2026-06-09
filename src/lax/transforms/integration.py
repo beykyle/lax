@@ -26,7 +26,22 @@ class _IntegrationHelper:
 
 
 def make_integration(mesh: Mesh) -> Integrator:
-    """Return a JIT-compiled mesh-basis integration helper. [DESIGN.md §13.3]"""
+    """Return a JIT-compiled mesh-basis integration helper.
+
+    The Lagrange-mesh Gauss approximation makes norm and expectation-value
+    integrals exact sums over mesh points [Baye eq. 2.82].  [DESIGN.md §13.3]
+
+    Parameters
+    ----------
+    mesh
+        Compiled mesh (currently unused; reserved for mesh-dependent
+        integrators in future mesh families).
+
+    Returns
+    -------
+    Integrator
+        Callable: ``integrate(values, operator=None) → scalar``.
+    """
 
     del mesh
     return _IntegrationHelper()
@@ -51,15 +66,9 @@ def _integrate_matrix(values: jax.Array, operator: jax.Array) -> jax.Array:
     return result
 
 
-_INTEGRATE_NORM_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-    _integrate_norm
-)
-_INTEGRATE_DIAGONAL_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-    _integrate_diagonal
-)
-_INTEGRATE_MATRIX_JIT = jax.jit(  # pyright: ignore[reportUnknownMemberType] -- JAX jit wrappers are not precisely typed at module scope.
-    _integrate_matrix
-)
+_INTEGRATE_NORM_JIT = jax.jit(_integrate_norm)
+_INTEGRATE_DIAGONAL_JIT = jax.jit(_integrate_diagonal)
+_INTEGRATE_MATRIX_JIT = jax.jit(_integrate_matrix)
 
 
 __all__ = ["make_integration"]
