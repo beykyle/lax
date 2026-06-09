@@ -161,10 +161,21 @@ class _RMatrixGridObservable:
     energies: jax.Array
     channel_radius: float
     mass_factor: float
+    mass_factor_grid: jax.Array | None = None
 
     def __call__(self, spectra: Spectrum) -> jax.Array:
         """Evaluate `R(E_i; spec_i)` across the compile-time energy grid."""
 
+        if self.mass_factor_grid is not None:
+            return cast(
+                jax.Array,
+                _RMATRIX_GRID_WITH_MU_JIT(
+                    spectra,
+                    self.energies,
+                    self.channel_radius,
+                    self.mass_factor_grid,
+                ),
+            )
         return cast(
             jax.Array,
             _RMATRIX_GRID_JIT(
@@ -184,10 +195,22 @@ class _SMatrixGridObservable:
     boundary: BoundaryValues
     channel_radius: float
     mass_factor: float
+    mass_factor_grid: jax.Array | None = None
 
     def __call__(self, spectra: Spectrum) -> jax.Array:
         """Evaluate `S(E_i; spec_i)` across the compile-time energy grid."""
 
+        if self.mass_factor_grid is not None:
+            return cast(
+                jax.Array,
+                _SMATRIX_GRID_WITH_MU_JIT(
+                    spectra,
+                    self.energies,
+                    self.boundary,
+                    self.channel_radius,
+                    self.mass_factor_grid,
+                ),
+            )
         return cast(
             jax.Array,
             _SMATRIX_GRID_JIT(
@@ -208,10 +231,22 @@ class _PhasesGridObservable:
     boundary: BoundaryValues
     channel_radius: float
     mass_factor: float
+    mass_factor_grid: jax.Array | None = None
 
     def __call__(self, spectra: Spectrum) -> jax.Array:
         """Evaluate `δ(E_i; spec_i)` across the compile-time energy grid."""
 
+        if self.mass_factor_grid is not None:
+            return cast(
+                jax.Array,
+                _PHASES_GRID_WITH_MU_JIT(
+                    spectra,
+                    self.energies,
+                    self.boundary,
+                    self.channel_radius,
+                    self.mass_factor_grid,
+                ),
+            )
         return cast(
             jax.Array,
             _PHASES_GRID_JIT(
@@ -323,6 +358,7 @@ def bind_grid_observables(
     channels: tuple[ChannelSpec, ...],
     energies: jax.Array,
     boundary: BoundaryValues | None,
+    mass_factor_grid: jax.Array | None = None,
 ) -> tuple[SpectrumGridObservable, SpectrumGridObservable | None, SpectrumGridObservable | None]:
     """Bind aligned-grid spectral observables for energy-dependent workflows.
 
@@ -337,6 +373,10 @@ def bind_grid_observables(
     boundary
         Compile-time matching data. When absent, only the aligned-grid R-matrix
         observable is returned.
+    mass_factor_grid
+        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``, or ``None``
+        for a constant mass factor.  When provided the spectral denominators
+        ``ε_k − E_i/μ(E_i)`` use the correct per-energy value.
 
     Returns
     -------
@@ -351,12 +391,14 @@ def bind_grid_observables(
         energies=energies,
         channel_radius=channel_radius,
         mass_factor=mass_factor,
+        mass_factor_grid=mass_factor_grid,
     )
     smatrix_grid, phases_grid = _matching_grid_observables(
         energies=energies,
         boundary=boundary,
         channel_radius=channel_radius,
         mass_factor=mass_factor,
+        mass_factor_grid=mass_factor_grid,
     )
     return rmatrix_grid, smatrix_grid, phases_grid
 
@@ -439,6 +481,7 @@ def _matching_grid_observables(
     boundary: BoundaryValues | None,
     channel_radius: float,
     mass_factor: float,
+    mass_factor_grid: jax.Array | None = None,
 ) -> tuple[SpectrumGridObservable | None, SpectrumGridObservable | None]:
     """Create aligned-grid matching observables when boundary data are available."""
 
@@ -450,12 +493,14 @@ def _matching_grid_observables(
             boundary=boundary,
             channel_radius=channel_radius,
             mass_factor=mass_factor,
+            mass_factor_grid=mass_factor_grid,
         ),
         _PhasesGridObservable(
             energies=energies,
             boundary=boundary,
             channel_radius=channel_radius,
             mass_factor=mass_factor,
+            mass_factor_grid=mass_factor_grid,
         ),
     )
 
@@ -464,7 +509,7 @@ def _rmatrix(
     spectrum: Spectrum,
     energy: float | jax.Array,
     channel_radius: float,
-    mass_factor: float,
+    mass_factor: float | jax.Array,
 ) -> jax.Array:
     """Return the spectral R-matrix at one energy."""
 
@@ -652,6 +697,72 @@ def _phases_grid(
     )
 
 
+def _rmatrix_grid_with_mu(
+    spectra: Spectrum,
+    energies: jax.Array,
+    channel_radius: float,
+    mass_factor_grid: jax.Array,
+) -> jax.Array:
+    """Return aligned-grid ``R(E_i; spec_i)`` samples with per-energy μ(E)."""
+
+    def one_energy(spectrum: Spectrum, energy: jax.Array, mu: jax.Array) -> jax.Array:
+        return _rmatrix(spectrum, energy, channel_radius, mu)
+
+    return jax.vmap(one_energy)(spectra, energies, mass_factor_grid)
+
+
+def _smatrix_grid_with_mu(
+    spectra: Spectrum,
+    energies: jax.Array,
+    boundary: BoundaryValues,
+    channel_radius: float,
+    mass_factor_grid: jax.Array,
+) -> jax.Array:
+    """Return aligned-grid ``S(E_i; spec_i)`` samples with per-energy μ(E)."""
+
+    wave_numbers = _boundary_wave_numbers(boundary)
+
+    def one_energy(
+        spectrum: Spectrum,
+        energy: jax.Array,
+        h_plus: jax.Array,
+        h_minus: jax.Array,
+        h_plus_p: jax.Array,
+        h_minus_p: jax.Array,
+        is_open: jax.Array,
+        k: jax.Array,
+        mu: jax.Array,
+    ) -> jax.Array:
+        r = _rmatrix(spectrum, energy, channel_radius, mu)
+        return _match_one_energy(r, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
+
+    return jax.vmap(one_energy)(
+        spectra,
+        energies,
+        boundary.H_plus,
+        boundary.H_minus,
+        boundary.H_plus_p,
+        boundary.H_minus_p,
+        boundary.is_open,
+        wave_numbers,
+        mass_factor_grid,
+    )
+
+
+def _phases_grid_with_mu(
+    spectra: Spectrum,
+    energies: jax.Array,
+    boundary: BoundaryValues,
+    channel_radius: float,
+    mass_factor_grid: jax.Array,
+) -> jax.Array:
+    """Return aligned-grid ``δ(E_i; spec_i)`` samples with per-energy μ(E)."""
+
+    return jax.vmap(phases_from_S)(
+        _smatrix_grid_with_mu(spectra, energies, boundary, channel_radius, mass_factor_grid)
+    )
+
+
 def _direct_smatrix_grid(rmatrix_grid: jax.Array, boundary: BoundaryValues) -> jax.Array:
     """Return aligned-grid `S(E_i; V_i)` samples from direct R-matrices."""
 
@@ -720,6 +831,20 @@ _PHASES_GRID_JIT = jax.jit(
 )
 _DIRECT_SMATRIX_GRID_JIT = jax.jit(_direct_smatrix_grid)
 _DIRECT_PHASES_GRID_JIT = jax.jit(_direct_phases_grid)
+# μ(E)-aware aligned-grid kernels: mass_factor_grid is a traced JAX array in the vmap,
+# so it is NOT in static_argnames.  channel_radius remains static.
+_RMATRIX_GRID_WITH_MU_JIT = jax.jit(
+    _rmatrix_grid_with_mu,
+    static_argnames=("channel_radius",),
+)
+_SMATRIX_GRID_WITH_MU_JIT = jax.jit(
+    _smatrix_grid_with_mu,
+    static_argnames=("channel_radius",),
+)
+_PHASES_GRID_WITH_MU_JIT = jax.jit(
+    _phases_grid_with_mu,
+    static_argnames=("channel_radius",),
+)
 
 
 def _decouple_closed_channels(

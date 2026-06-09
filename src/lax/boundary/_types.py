@@ -19,7 +19,11 @@ type EnergyLike = float | jax.Array
 class SpectrumKernel(Protocol):
     """Callable that maps a potential to its spectral decomposition."""
 
-    def __call__(self, potential: jax.Array) -> Spectrum:
+    def __call__(
+        self,
+        potential: jax.Array,
+        mass_factor: float | jax.Array | None = None,
+    ) -> Spectrum:
         """Return the spectral decomposition for one assembled potential.
 
         Parameters
@@ -27,6 +31,14 @@ class SpectrumKernel(Protocol):
         potential
             Assembled potential array, shape ``(N_c, N_c, N)`` for local or
             ``(N_c, N_c, N, N)`` for non-local.
+        mass_factor
+            Optional per-energy ℏ²/2μ in MeV·fm².  When provided, overrides
+            ``ChannelSpec.mass_factor`` so the Hamiltonian uses ``V/μ(E)`` and
+            ``threshold/μ(E)`` at each energy.  Typical usage::
+
+                spectra = jax.vmap(
+                    lambda V, mu: solver.spectrum(V, mass_factor=mu)
+                )(V_grid, mu_grid)
 
         Returns
         -------
@@ -595,6 +607,10 @@ class Solver:
         Precomputed radial-grid and momentum-space transform matrices.
     method
         Linear-algebra backend: ``"eigh"``, ``"eig"``, or ``"linear_solve"``.
+    mass_factor_grid
+        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``, or ``None``
+        when a constant mass factor is used.  Stored here so the aligned-grid
+        observables can use the correct μ(E) at each energy point.
 
     **Spectral-path observables** (present when ``method`` is ``"eigh"``/``"eig"``):
 
@@ -662,6 +678,7 @@ class Solver:
     boundary: BoundaryValues | None
     transforms: TransformMatrices
     method: Method
+    mass_factor_grid: jax.Array | None = None
     spectrum: SpectrumKernel | None = None
     rmatrix: RMatrixObservable | None = None
     smatrix: SpectrumObservable | None = None

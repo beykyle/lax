@@ -14,6 +14,7 @@ def assemble_block_hamiltonian(
     operators: OperatorMatrices,
     channels: tuple[ChannelSpec, ...],
     potential: jax.Array,
+    mass_factor_override: float | jax.Array | None = None,
 ) -> jax.Array:
     """Assemble the Bloch-augmented block Hamiltonian in fm⁻² units.
 
@@ -36,6 +37,11 @@ def assemble_block_hamiltonian(
     potential
         Assembled potential in MeV.  Shape ``(N_c, N_c, N)`` for local
         or ``(N_c, N_c, N, N)`` for non-local.
+    mass_factor_override
+        When not ``None``, overrides ``channel.mass_factor`` for every
+        channel block.  Supply a scalar JAX float when using an
+        energy-dependent μ(E) — the value is traced and vmapped normally.
+        All channels are assumed to share the same reduced mass.
 
     Returns
     -------
@@ -53,7 +59,11 @@ def assemble_block_hamiltonian(
     blocks: list[jax.Array] = []
     for channel_index in range(channel_count):
         row_blocks: list[jax.Array] = []
-        mass_factor = channels[channel_index].mass_factor
+        mass_factor: float | jax.Array = (
+            mass_factor_override
+            if mass_factor_override is not None
+            else channels[channel_index].mass_factor
+        )
         angular_momentum = channels[channel_index].l
         threshold = channels[channel_index].threshold / mass_factor
         for coupled_index in range(channel_count):

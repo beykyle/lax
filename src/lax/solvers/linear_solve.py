@@ -69,6 +69,7 @@ class _DirectRMatrixGridObservable:
     matrix_size: int
     mass_factor: float
     boundary: BoundaryValues | None
+    mass_factor_grid: jax.Array | None = None
 
     def __call__(self, potentials: jax.Array) -> jax.Array:
         """Evaluate `R(E_i; V_i)` across the compile-time energy grid."""
@@ -86,6 +87,7 @@ class _DirectRMatrixGridObservable:
                 self.matrix_size,
                 self.mass_factor,
                 self.boundary,
+                self.mass_factor_grid,
             ),
         )
 
@@ -151,6 +153,7 @@ def make_rmatrix_direct_grid_observable(
     channels: tuple[ChannelSpec, ...],
     energies: jax.Array,
     boundary: BoundaryValues | None,
+    mass_factor_grid: jax.Array | None = None,
 ) -> DirectGridObservable:
     """Build a JIT-compiled aligned-grid ``R(E_i; V_i)`` kernel.
 
@@ -171,6 +174,9 @@ def make_rmatrix_direct_grid_observable(
         Compile-time energy grid in MeV, shape ``(N_E,)``.
     boundary
         Compile-time boundary values, or ``None``.
+    mass_factor_grid
+        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``, or ``None``
+        for constant mass factor.
 
     Returns
     -------
@@ -195,6 +201,7 @@ def make_rmatrix_direct_grid_observable(
             matrix_size=matrix_size,
             mass_factor=mass_factor,
             boundary=boundary,
+            mass_factor_grid=mass_factor_grid,
         ),
     )
 
@@ -308,6 +315,7 @@ def _rmatrix_direct_grid(
     matrix_size: int,
     mass_factor: float,
     boundary: BoundaryValues | None,
+    mass_factor_grid: jax.Array | None = None,
 ) -> jax.Array:
     """Return aligned-grid ``R(E_i; V_i)`` samples for energy-dependent potentials.
 
@@ -391,6 +399,38 @@ def _rmatrix_direct_grid(
         )
         return (q.T @ solved) / channel_radius
 
+    def one_energy_with_mu(
+        potential: jax.Array,
+        energy: jax.Array,
+        mu: jax.Array,
+    ) -> jax.Array:
+        hamiltonian = assemble_block_hamiltonian(
+            mesh,
+            operators,
+            channels,
+            potential,
+            mass_factor_override=mu,
+        )
+        energy_dimless = energy / mu
+        matrix = hamiltonian - energy_dimless * jnp.eye(
+            matrix_size,
+            dtype=hamiltonian.dtype,
+        )
+        solved = cast(
+            jax.Array,
+            jnp.linalg.solve(
+                matrix,
+                q,
+            ),
+        )
+        return (q.T @ solved) / channel_radius
+
+    if mass_factor_grid is not None:
+        return jax.vmap(one_energy_with_mu)(
+            potentials,
+            energies,
+            mass_factor_grid,
+        )
     return jax.vmap(one_energy)(
         potentials,
         energies,

@@ -25,6 +25,7 @@ def compute_boundary_values(
     channel_radius: float,
     z1z2: tuple[int, int] | None = None,
     dps: int = 40,
+    mass_factor_grid: np.ndarray | None = None,
 ) -> BoundaryValues:
     """Compute Coulomb and Whittaker boundary values at the channel radius.
 
@@ -51,6 +52,11 @@ def compute_boundary_values(
     dps
         ``mpmath`` decimal precision.  The default of 40 provides ample
         guard digits against cancellation near resonances.
+    mass_factor_grid
+        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``.  When
+        provided, overrides ``channel.mass_factor`` in the wave-number and
+        Sommerfeld-parameter computation at each energy.  Pass ``None`` to
+        use the scalar ``ChannelSpec.mass_factor`` uniformly.
 
     Returns
     -------
@@ -73,7 +79,22 @@ def compute_boundary_values(
 
     for energy_index, energy in enumerate(energies):
         for channel_index, channel in enumerate(channels):
-            relative_energy = float(energy - channel.threshold)
+            # Use per-energy mass_factor when provided; fall back to ChannelSpec value.
+            effective_mass_factor = (
+                float(mass_factor_grid[energy_index])
+                if mass_factor_grid is not None
+                else channel.mass_factor
+            )
+            effective_channel = (
+                ChannelSpec(
+                    l=channel.l,
+                    threshold=channel.threshold,
+                    mass_factor=effective_mass_factor,
+                )
+                if mass_factor_grid is not None
+                else channel
+            )
+            relative_energy = float(energy - effective_channel.threshold)
             if relative_energy > 0.0:
                 _fill_open_channel(
                     H_plus,
@@ -84,7 +105,7 @@ def compute_boundary_values(
                     k_values,
                     energy_index,
                     channel_index,
-                    channel,
+                    effective_channel,
                     relative_energy,
                     channel_radius,
                     z1z2,
@@ -99,7 +120,7 @@ def compute_boundary_values(
                     k_values,
                     energy_index,
                     channel_index,
-                    channel,
+                    effective_channel,
                     relative_energy,
                     channel_radius,
                     z1z2,
