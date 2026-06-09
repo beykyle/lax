@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -21,12 +22,16 @@ except ImportError:
 # When running via `uv run sphinx-build`, lax is already installed in the env.
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-# Create a `notebooks/` symlink so toctree can reach the example notebooks
-# without having to copy them or move files.
-_notebooks_link = Path(__file__).parent / "notebooks"
+# Copy example notebooks into docs/notebooks/ (a real directory, not a symlink).
+# A real directory keeps path resolution within docs/ so Sphinx can locate
+# notebook output images without following symlinks into the project root.
+_notebooks_dir = Path(__file__).parent / "notebooks"
 _examples_dir = Path(__file__).parent.parent / "examples"
-if not _notebooks_link.exists():
-    _notebooks_link.symlink_to(_examples_dir.resolve())
+if _notebooks_dir.is_symlink():
+    _notebooks_dir.unlink()
+_notebooks_dir.mkdir(exist_ok=True)
+for _nb in _examples_dir.glob("*.ipynb"):
+    shutil.copy2(_nb, _notebooks_dir / _nb.name)
 
 # ---------------------------------------------------------------------------
 # Project metadata
