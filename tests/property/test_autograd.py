@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import hypothesis.strategies as st
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from hypothesis import given, settings
 
 import lax as lm
-from lax.solvers import assemble_block_hamiltonian
 
 pytest.importorskip("jax")
 
@@ -20,7 +20,7 @@ _SOLVER = lm.compile(
     mesh=lm.MeshSpec("legendre", "x", n=_N, scale=_SCALE),
     channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=_HBAR2_2MU),),
     operators=("T+L",),
-    solvers=("spectrum",),
+    solvers=("spectrum", "smatrix"),
     energies=_ENERGIES,
 )
 
@@ -37,19 +37,28 @@ def _local_gaussian_potential(draw: st.DrawFn) -> jnp.ndarray:
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
-def test_block_hamiltonian_is_real_symmetric(V: jnp.ndarray) -> None:
-    """Block Hamiltonian H = H^T for any real local potential."""
-    H = np.asarray(
-        assemble_block_hamiltonian(_SOLVER.mesh, _SOLVER.operators, _SOLVER.channels, V)
-    )
-    assert np.allclose(H, H.T, atol=1e-10)
+def test_spectrum_eigenvalues_are_differentiable(V: jnp.ndarray) -> None:
+    """jax.grad passes through solver.spectrum for any real local potential."""
+    assert _SOLVER.spectrum is not None
+
+    def loss(V: jnp.ndarray) -> jax.Array:
+        return jnp.sum(_SOLVER.spectrum(V).eigenvalues)
+
+    grad = jax.grad(loss)(V)
+    assert jnp.all(jnp.isfinite(grad))
 
 
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
-def test_eigenvalues_are_real_for_real_symmetric_potential(V: jnp.ndarray) -> None:
-    """eigh path returns real eigenvalues for a real symmetric Hamiltonian."""
+def test_smatrix_is_differentiable(V: jnp.ndarray) -> None:
+    """jax.grad passes through the full spectrum → S-matrix pipeline."""
     assert _SOLVER.spectrum is not None
-    spectrum = _SOLVER.spectrum(V)
-    assert jnp.issubdtype(spectrum.eigenvalues.dtype, jnp.floating)
+    assert _SOLVER.smatrix is not None
+
+    def loss(V: jnp.ndarray) -> jax.Array:
+        spec = _SOLVER.spectrum(V)
+        return jnp.sum(_SOLVER.smatrix(spec).real)
+
+    grad = jax.grad(loss)(V)
+    assert jnp.all(jnp.isfinite(grad))
