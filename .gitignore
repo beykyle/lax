@@ -4,6 +4,7 @@
 
 # docs build
 /docs/_build/
+/docs/notebooks/
 
 # .ipynb_checkpoints
 */.ipynb_checkpoints/*
