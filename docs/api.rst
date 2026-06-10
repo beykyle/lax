@@ -11,10 +11,6 @@ containing all JIT-compiled observables.
 
 .. autofunction:: compile
 
-.. autofunction:: assemble_local
-
-.. autofunction:: assemble_nonlocal
-
 .. autofunction:: make_wavefunction_source
 
 .. autoclass:: MeshSpec
