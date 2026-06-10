@@ -144,9 +144,14 @@ def _spectrum_eigh(
 ) -> Spectrum:
     """Return the Hermitian spectrum for one potential."""
 
-    hamiltonian = assemble_block_hamiltonian(
+    H_MeV = assemble_block_hamiltonian(
         mesh, operators, channels, potential, mass_factor_override
     )
+    if mass_factor_override is not None and jnp.ndim(mass_factor_override) == 0:
+        m0 = mass_factor_override
+    else:
+        m0 = channels[0].mass_factor
+    hamiltonian = H_MeV / m0
     eigensystem = cast(
         tuple[jax.Array, jax.Array],
         jnp.linalg.eigh(hamiltonian),
@@ -172,9 +177,14 @@ def _spectrum_eig(
 ) -> Spectrum:
     """Return the complex-symmetric spectrum for one potential."""
 
-    hamiltonian = assemble_block_hamiltonian(
+    H_MeV = assemble_block_hamiltonian(
         mesh, operators, channels, potential, mass_factor_override
     )
+    if mass_factor_override is not None and jnp.ndim(mass_factor_override) == 0:
+        m0 = mass_factor_override
+    else:
+        m0 = channels[0].mass_factor
+    hamiltonian = H_MeV / m0
     eigenvalues, eigenvectors = _eig_via_callback(hamiltonian)
     bilinear_norm = jnp.sqrt(jnp.diag(eigenvectors.T @ eigenvectors))
     eigenvectors_normalized = eigenvectors / bilinear_norm[None, :]
