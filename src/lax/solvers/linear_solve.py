@@ -731,13 +731,13 @@ def _direct_smatrix_grid(
 ) -> jax.Array:
     """Match an (N_E, N_c, N_c) R-matrix grid to the S-matrix grid."""
 
-    return cast(jax.Array, jax.vmap(smatrix_from_R)(r_grid, boundary))
+    return jax.vmap(smatrix_from_R)(r_grid, boundary)
 
 
 def _direct_phases_grid(s_grid: jax.Array) -> jax.Array:
     """Extract phase shifts from an (N_E, N_c, N_c) S-matrix grid."""
 
-    return cast(jax.Array, jax.vmap(phases_from_S)(s_grid))
+    return jax.vmap(phases_from_S)(s_grid)
 
 
 _RMATRIX_DIRECT_JIT = jax.jit(

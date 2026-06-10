@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 import lax as lm
-from lax.operators.potential import assemble_local, assemble_nonlocal
 
 pytest.importorskip("jax")
 
@@ -79,7 +78,7 @@ def test_interaction_from_block_rejects_wrong_shape() -> None:
 
 
 def test_interaction_from_array_local_matches_assemble_local() -> None:
-    """Local term builds the same (M, M) diagonal block as assemble_local."""
+    """Local term builds the correct (M, M) diagonal block."""
 
     solver = _make_mesh_channels()
     radii = np.asarray(solver.mesh.radii)
@@ -93,13 +92,9 @@ def test_interaction_from_array_local_matches_assemble_local() -> None:
         energy_dependent=False,
     )
 
-    # assemble_local returns (1, 1, N); the block should be diag(g)
-    V_raw = assemble_local(solver.mesh, lambda r: g)  # (1, 1, N)
+    # Local term with A=[[1]] should produce diag(g) as the (M, M) block
     expected = np.diag(np.asarray(g))
-
     assert np.allclose(np.asarray(interaction.block), expected, atol=1e-13)
-    # Also verify it matches the V_raw diagonal
-    assert np.allclose(np.asarray(interaction.block), np.diag(np.asarray(V_raw[0, 0])), atol=1e-13)
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +103,12 @@ def test_interaction_from_array_local_matches_assemble_local() -> None:
 
 
 def test_interaction_from_array_nonlocal_matches_assemble_nonlocal() -> None:
-    """Nonlocal term builds the same (M, M) block as assemble_nonlocal."""
+    """Nonlocal term builds the correct Gauss-scaled (M, M) block."""
 
     solver = _make_mesh_channels()
     radii = np.asarray(solver.mesh.radii)
+    weights = np.asarray(solver.mesh.weights)
+    a = float(solver.mesh.scale)
     ri, rj = np.meshgrid(radii, radii, indexing="ij")
     K = jnp.asarray(np.exp(-0.5 * (ri + rj)))  # (N, N) kernel values
 
@@ -122,12 +119,10 @@ def test_interaction_from_array_nonlocal_matches_assemble_nonlocal() -> None:
         energy_dependent=False,
     )
 
-    # assemble_nonlocal applies sqrt(w_i * w_j) * a scaling; the block should match
-    V_raw = assemble_nonlocal(
-        solver.mesh, lambda r1, r2: jnp.asarray(np.exp(-0.5 * (np.asarray(r1) + np.asarray(r2))))
-    )
-    expected = np.asarray(V_raw[0, 0])  # (N, N)
-
+    # Nonlocal term with A=[[1]] should produce K * sqrt(w_i * w_j) * a
+    wi, wj = np.meshgrid(weights, weights, indexing="ij")
+    gauss_scale = np.sqrt(wi * wj) * a
+    expected = np.asarray(K) * gauss_scale
     assert np.allclose(np.asarray(interaction.block), expected, atol=1e-13)
 
 

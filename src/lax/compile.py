@@ -8,8 +8,9 @@ boundary data, binds pickle-safe runtime callables, and returns the final
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -113,10 +114,10 @@ class _ObservableBundle:
     smatrix_direct: SMatrixDirectObservable | None
     phases_direct: PhasesDirectObservable | None
     wavefunction_direct: WavefunctionDirectObservable | None
-    interaction_from_block: object | None
-    interaction_from_array: object | None
-    interaction_from_funcs: object | None
-    potential: object | None
+    interaction_from_block: Callable[..., Any] | None
+    interaction_from_array: Callable[..., Any] | None
+    interaction_from_funcs: Callable[..., Any] | None
+    potential: Callable[..., Any] | None
     interpolate_rmatrix: InterpolatorBuilder | None
     interpolate_smatrix: InterpolatorBuilder | None
     interpolate_phases: InterpolatorBuilder | None
@@ -540,7 +541,9 @@ def _bind_solver_observables(
             boundary,
             mass_factor_grid,
         )
-        from lax.solvers.linear_solve import _DirectRMatrixKernel  # noqa: PLC0415
+        from lax.solvers.linear_solve import (
+            _DirectRMatrixKernel,  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+        )
 
         if isinstance(rmatrix_direct_fn, _DirectRMatrixKernel):
             smatrix_direct_fn = make_smatrix_direct_observable(rmatrix_direct_fn, boundary)

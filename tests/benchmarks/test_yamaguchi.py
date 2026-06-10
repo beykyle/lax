@@ -17,7 +17,7 @@ large-radius Baye/Hesse value is reached once the channel radius is increased;
 the prototype and the library both recover it at `a=15, N=20`.
 
 This test is the keystone benchmark: it exercises the full chain
-  assemble_nonlocal → spectrum → rmatrix → smatrix → phases.
+  solver.potential → spectrum → rmatrix → smatrix → phases.
 """
 
 import numpy as np

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import jax
 import jax.numpy as jnp
 
@@ -65,7 +67,7 @@ def assemble_block_hamiltonian(
             if jnp.ndim(mass_factor_override) == 0:
                 m_c = mass_factor_override
             else:
-                m_c = mass_factor_override[channel_index]
+                m_c = cast(jax.Array, mass_factor_override)[channel_index]
         else:
             m_c = channels[channel_index].mass_factor
         angular_momentum = channels[channel_index].l

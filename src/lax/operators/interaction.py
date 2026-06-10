@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -55,8 +57,8 @@ class _InteractionFromArray:
 
     def __call__(
         self,
-        local: list[tuple[jax.Array, jax.Array]] = (),
-        nonlocal_: list[tuple[jax.Array, jax.Array]] = (),
+        local: Sequence[tuple[jax.Array, jax.Array]] = (),
+        nonlocal_: Sequence[tuple[jax.Array, jax.Array]] = (),
         energy_dependent: bool = False,
     ) -> Interaction:
         """Build Interaction from (form_factor, coupling_matrix) term lists.
@@ -84,10 +86,10 @@ class _InteractionFromArray:
         else:
             block = jnp.zeros((M, M), dtype=dtype)
 
-        for term_idx, (g, A) in enumerate(local):
-            g = jnp.asarray(g)
-            A = jnp.asarray(A)
-            self._validate_A(A, f"local term {term_idx}")
+        for term_idx, (g_raw, a_raw) in enumerate(local):
+            g = jnp.asarray(g_raw)
+            a_mat = jnp.asarray(a_raw)
+            self._validate_A(a_mat, f"local term {term_idx}")
             if energy_dependent:
                 if g.ndim != 2 or g.shape != (N_E, N):
                     raise ValueError(
@@ -96,11 +98,11 @@ class _InteractionFromArray:
                     )
                 for c in range(N_c):
                     for cp in range(N_c):
-                        if A[c, cp] == 0:
+                        if a_mat[c, cp] == 0:
                             continue
                         row_start = c * N
                         col_start = cp * N
-                        diag_blocks = jax.vmap(jnp.diag)(A[c, cp] * g)  # (N_E, N, N)
+                        diag_blocks = jax.vmap(jnp.diag)(a_mat[c, cp] * g)  # (N_E, N, N)
                         block = block.at[
                             :, row_start : row_start + N, col_start : col_start + N
                         ].add(diag_blocks)
@@ -112,18 +114,18 @@ class _InteractionFromArray:
                     )
                 for c in range(N_c):
                     for cp in range(N_c):
-                        if A[c, cp] == 0:
+                        if a_mat[c, cp] == 0:
                             continue
                         row_start = c * N
                         col_start = cp * N
                         block = block.at[row_start : row_start + N, col_start : col_start + N].add(
-                            jnp.diag(A[c, cp] * g)
+                            jnp.diag(a_mat[c, cp] * g)
                         )
 
-        for term_idx, (g, A) in enumerate(nonlocal_):
-            g = jnp.asarray(g)
-            A = jnp.asarray(A)
-            self._validate_A(A, f"nonlocal term {term_idx}")
+        for term_idx, (g_raw, a_raw) in enumerate(nonlocal_):
+            g = jnp.asarray(g_raw)
+            a_mat = jnp.asarray(a_raw)
+            self._validate_A(a_mat, f"nonlocal term {term_idx}")
             if energy_dependent:
                 if g.ndim != 3 or g.shape != (N_E, N, N):
                     raise ValueError(
@@ -133,13 +135,13 @@ class _InteractionFromArray:
                 scaled = g * self.gauss_scale[None, :, :]  # (N_E, N, N)
                 for c in range(N_c):
                     for cp in range(N_c):
-                        if A[c, cp] == 0:
+                        if a_mat[c, cp] == 0:
                             continue
                         row_start = c * N
                         col_start = cp * N
                         block = block.at[
                             :, row_start : row_start + N, col_start : col_start + N
-                        ].add(A[c, cp] * scaled)
+                        ].add(a_mat[c, cp] * scaled)
             else:
                 if g.ndim != 2 or g.shape != (N, N):
                     raise ValueError(
@@ -149,12 +151,12 @@ class _InteractionFromArray:
                 scaled = g * self.gauss_scale  # (N, N)
                 for c in range(N_c):
                     for cp in range(N_c):
-                        if A[c, cp] == 0:
+                        if a_mat[c, cp] == 0:
                             continue
                         row_start = c * N
                         col_start = cp * N
                         block = block.at[row_start : row_start + N, col_start : col_start + N].add(
-                            A[c, cp] * scaled
+                            a_mat[c, cp] * scaled
                         )
 
         first_block = block[0] if energy_dependent else block
@@ -176,8 +178,8 @@ class _InteractionFromFuncs:
 
     def __call__(
         self,
-        local: list = (),
-        nonlocal_: list = (),
+        local: Sequence[tuple[Any, Any]] = (),
+        nonlocal_: Sequence[tuple[Any, Any]] = (),
         energy_dependent: bool = False,
     ) -> Interaction:
         """Build Interaction from callable (form_factor_fn, coupling_matrix) terms.
@@ -193,25 +195,25 @@ class _InteractionFromFuncs:
         N_E = self.N_E
         ri, rj = jnp.meshgrid(r, r, indexing="ij")  # (N, N)
 
-        local_arrays = []
-        for g_fn, A in local:
+        local_arrays: list[Any] = []
+        for g_fn, a_mat in local:
             if energy_dependent:
                 g_arr = jnp.stack(
                     [g_fn(r, float(self.energies[ie])) for ie in range(N_E)]
                 )  # (N_E, N)
             else:
                 g_arr = g_fn(r)  # (N,)
-            local_arrays.append((g_arr, A))
+            local_arrays.append((g_arr, a_mat))
 
-        nonlocal_arrays = []
-        for g_fn, A in nonlocal_:
+        nonlocal_arrays: list[Any] = []
+        for g_fn, a_mat in nonlocal_:
             if energy_dependent:
                 g_arr = jnp.stack(
                     [g_fn(ri, rj, float(self.energies[ie])) for ie in range(N_E)]
                 )  # (N_E, N, N)
             else:
                 g_arr = g_fn(ri, rj)  # (N, N)
-            nonlocal_arrays.append((g_arr, A))
+            nonlocal_arrays.append((g_arr, a_mat))
 
         return self.array_builder(
             local=local_arrays,

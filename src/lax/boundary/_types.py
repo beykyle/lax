@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import jax
 
@@ -764,10 +764,10 @@ class Solver:
     smatrix_direct: SMatrixDirectObservable | None = None
     phases_direct: PhasesDirectObservable | None = None
     wavefunction_direct: WavefunctionDirectObservable | None = None
-    interaction_from_block: Callable | None = None
-    interaction_from_array: Callable | None = None
-    interaction_from_funcs: Callable | None = None
-    potential: Callable | None = None
+    interaction_from_block: Callable[..., Any] | None = None
+    interaction_from_array: Callable[..., Any] | None = None
+    interaction_from_funcs: Callable[..., Any] | None = None
+    potential: Callable[..., Any] | None = None
     interpolate_rmatrix: InterpolatorBuilder | None = None
     interpolate_smatrix: InterpolatorBuilder | None = None
     interpolate_phases: InterpolatorBuilder | None = None
