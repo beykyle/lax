@@ -294,3 +294,179 @@ def test_direct_grid_observables_match_spectral_grid_for_real_energy_dependent_p
     assert np.allclose(direct_r, spectral_r, atol=1.0e-10, rtol=1.0e-10)
     assert np.allclose(direct_s, spectral_s, atol=1.0e-10, rtol=1.0e-10)
     assert np.allclose(direct_phases, spectral_phases, atol=1.0e-10, rtol=1.0e-10)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: per-channel and energy-dependent mass_factor_grid
+# ---------------------------------------------------------------------------
+
+
+def test_mass_factor_grid_broadcast_scalar_reproduces_uniform() -> None:
+    """Scalar mass_factor_grid broadcasts and reproduces the uniform compile."""
+
+    energies = jnp.asarray([0.25, 0.75])
+    m = 2.0
+    solver_uniform = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=4, scale=7.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=m),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=energies,
+        method="linear_solve",
+        energy_dependent=True,
+    )
+    solver_grid = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=4, scale=7.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=m),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=energies,
+        method="linear_solve",
+        energy_dependent=True,
+        mass_factor_grid=jnp.full((2,), m),  # (N_E,) — broadcasts to (N_E, N_c)
+    )
+
+    potentials = jax.vmap(lambda e: _make_energy_dependent_potential(solver_uniform, e))(energies)
+
+    assert solver_uniform.rmatrix_direct_grid is not None
+    assert solver_grid.rmatrix_direct_grid is not None
+
+    r_uniform = np.asarray(solver_uniform.rmatrix_direct_grid(potentials))
+    r_grid = np.asarray(solver_grid.rmatrix_direct_grid(potentials))
+
+    assert np.allclose(r_uniform, r_grid, atol=1.0e-12, rtol=1.0e-12)
+
+
+def test_mass_factor_grid_2d_reproduces_uniform() -> None:
+    """(N_E, N_c) mass_factor_grid with uniform values reproduces the baseline."""
+
+    energies = jnp.asarray([0.25, 0.75])
+    m = 2.0
+    solver_uniform = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=4, scale=7.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=m),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=energies,
+        method="linear_solve",
+        energy_dependent=True,
+    )
+    solver_grid = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=4, scale=7.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=m),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=energies,
+        method="linear_solve",
+        energy_dependent=True,
+        mass_factor_grid=jnp.full((2, 1), m),  # explicit (N_E, N_c) shape
+    )
+
+    potentials = jax.vmap(lambda e: _make_energy_dependent_potential(solver_uniform, e))(energies)
+
+    assert solver_uniform.rmatrix_direct_grid is not None
+    assert solver_grid.rmatrix_direct_grid is not None
+
+    r_uniform = np.asarray(solver_uniform.rmatrix_direct_grid(potentials))
+    r_grid = np.asarray(solver_grid.rmatrix_direct_grid(potentials))
+
+    assert np.allclose(r_uniform, r_grid, atol=1.0e-12, rtol=1.0e-12)
+
+
+def test_mass_factor_grid_rejects_wrong_shape() -> None:
+    """mass_factor_grid with mismatched N_E raises ValueError."""
+
+    with pytest.raises(ValueError, match="must equal"):
+        lm.compile(
+            mesh=lm.MeshSpec("legendre", "x", n=4, scale=7.0),
+            channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+            operators=("T+L",),
+            solvers=("rmatrix_direct",),
+            energies=jnp.asarray([0.5]),
+            energy_dependent=True,
+            mass_factor_grid=jnp.asarray([2.0, 2.0]),  # wrong length
+        )
+
+
+def test_per_channel_mass_factor_grid_decoupled_matches_single_channel() -> None:
+    """Per-channel mass_factor_grid: each diagonal element matches the single-channel case.
+
+    For a block-diagonal (decoupled) potential, R[c,c] depends only on channel
+    c's mass factor.  We verify that giving channel 0 mass μ₁ and channel 1
+    mass μ₂ reproduces the single-channel result for each channel independently.
+    """
+
+    energies = jnp.asarray([0.5, 1.0])
+    m0, m1 = 2.0, 5.0
+    n = 5
+    scale = 7.0
+
+    # Two-channel solver with per-channel mass factors at each energy.
+    mu_grid = jnp.tile(jnp.asarray([[m0, m1]]), (len(energies), 1))  # (N_E, 2)
+    two_ch = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=n, scale=scale),
+        channels=(
+            lm.ChannelSpec(l=0, threshold=0.0, mass_factor=m0),
+            lm.ChannelSpec(l=0, threshold=0.0, mass_factor=m1),
+        ),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=energies,
+        method="linear_solve",
+        energy_dependent=True,
+        mass_factor_grid=mu_grid,
+    )
+
+    # Single-channel reference solvers.
+    ch0_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=n, scale=scale),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=m0),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=energies,
+        method="linear_solve",
+        energy_dependent=True,
+    )
+    ch1_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=n, scale=scale),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=m1),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=energies,
+        method="linear_solve",
+        energy_dependent=True,
+    )
+
+    # Decoupled diagonal potential: channel 0 gets g0, channel 1 gets g1.
+    radii = two_ch.mesh.radii
+    g0 = -0.5 * jnp.exp(-(radii / 2.5) ** 2) * m0
+    g1 = -0.3 * jnp.exp(-(radii / 3.0) ** 2) * m1
+    zeros = jnp.zeros_like(g0)
+
+    def two_ch_pot(_energy: jax.Array) -> jax.Array:
+        return jnp.array([[g0, zeros], [zeros, g1]])  # (2, 2, N)
+
+    def ch0_pot(_energy: jax.Array) -> jax.Array:
+        return jnp.array([[[*g0]]])  # (1, 1, N)
+
+    def ch1_pot(_energy: jax.Array) -> jax.Array:
+        return jnp.array([[[*g1]]])  # (1, 1, N)
+
+    two_pots = jax.vmap(two_ch_pot)(energies)
+    ch0_pots = jax.vmap(ch0_pot)(energies)
+    ch1_pots = jax.vmap(ch1_pot)(energies)
+
+    assert two_ch.rmatrix_direct_grid is not None
+    assert ch0_solver.rmatrix_direct_grid is not None
+    assert ch1_solver.rmatrix_direct_grid is not None
+
+    r_two = np.asarray(two_ch.rmatrix_direct_grid(two_pots))  # (N_E, 2, 2)
+    r_ch0 = np.asarray(ch0_solver.rmatrix_direct_grid(ch0_pots))  # (N_E, 1, 1)
+    r_ch1 = np.asarray(ch1_solver.rmatrix_direct_grid(ch1_pots))  # (N_E, 1, 1)
+
+    # Diagonal elements of decoupled two-channel solver must match single-channel results.
+    assert np.allclose(r_two[:, 0, 0], r_ch0[:, 0, 0], atol=1.0e-10, rtol=1.0e-10)
+    assert np.allclose(r_two[:, 1, 1], r_ch1[:, 0, 0], atol=1.0e-10, rtol=1.0e-10)
+    # Off-diagonal must be zero for a decoupled potential.
+    assert np.allclose(r_two[:, 0, 1], 0.0, atol=1.0e-10)
+    assert np.allclose(r_two[:, 1, 0], 0.0, atol=1.0e-10)

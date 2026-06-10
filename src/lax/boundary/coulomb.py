@@ -53,10 +53,11 @@ def compute_boundary_values(
         ``mpmath`` decimal precision.  The default of 40 provides ample
         guard digits against cancellation near resonances.
     mass_factor_grid
-        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``.  When
-        provided, overrides ``channel.mass_factor`` in the wave-number and
-        Sommerfeld-parameter computation at each energy.  Pass ``None`` to
-        use the scalar ``ChannelSpec.mass_factor`` uniformly.
+        Per-energy, per-channel ℏ²/2μ values in MeV·fm², shape
+        ``(N_E, N_c)``.  When provided, ``mass_factor_grid[ie, ic]``
+        overrides ``channels[ic].mass_factor`` in the wave-number and
+        Sommerfeld-parameter computation for energy index ``ie``.  Pass
+        ``None`` to use the scalar ``ChannelSpec.mass_factor`` uniformly.
 
     Returns
     -------
@@ -79,9 +80,9 @@ def compute_boundary_values(
 
     for energy_index, energy in enumerate(energies):
         for channel_index, channel in enumerate(channels):
-            # Use per-energy mass_factor when provided; fall back to ChannelSpec value.
+            # Use per-energy, per-channel mass_factor when provided.
             effective_mass_factor = (
-                float(mass_factor_grid[energy_index])
+                float(mass_factor_grid[energy_index, channel_index])
                 if mass_factor_grid is not None
                 else channel.mass_factor
             )

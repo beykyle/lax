@@ -191,22 +191,22 @@ def compile(
     dps
         Decimal precision for the ``mpmath`` boundary-value calculation.
     mass_factor_grid
-        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``, or ``None``
-        to use the scalar ``ChannelSpec.mass_factor`` uniformly.  When provided,
-        ``len(mass_factor_grid)`` must equal ``len(energies)``.
+        Per-energy (and optionally per-channel) ℏ²/2μ values in MeV·fm².
+        Accepted shapes (all broadcast to the canonical ``(N_E, N_c)`` form):
 
-        This enables problems where the effective reduced mass depends on energy
-        (e.g. relativistic kinematics, energy-dependent folding potentials).
-        The grid is used in three places:
+        * ``None`` — use each channel's ``ChannelSpec.mass_factor`` uniformly.
+        * scalar — the same value for all energies and channels.
+        * shape ``(N_E,)`` — one value per energy, shared across channels.
+        * shape ``(N_E, N_c)`` — fully independent per ``(energy, channel)`` pair.
+
+        When provided, ``len(mass_factor_grid)`` along the first axis must equal
+        ``len(energies)``.  The grid is used in two places:
 
         1. **Boundary values** — wave numbers and Sommerfeld parameters at each
-           compile-time energy use ``mass_factor_grid[i]``.
-        2. **Hamiltonian assembly** — pass ``mass_factor`` to ``solver.spectrum``
-           at runtime: ``jax.vmap(lambda V, mu: solver.spectrum(V, mass_factor=mu))(V_grid, mu_grid)``.
-        3. **Aligned-grid observables** — ``solver.phases_grid``,
-           ``solver.smatrix_grid``, and ``solver.rmatrix_grid`` use the stored
-           grid so the spectral denominator ``ε_k − E_i/μ(E_i)`` is correct at
-           each energy point.
+           ``(energy, channel)`` pair use ``mass_factor_grid[ie, ic]``.
+        2. **Aligned-grid observables** — ``rmatrix_direct_grid`` (and its
+           derived ``smatrix``/``phases`` variants) assemble the Hamiltonian
+           with the per-energy per-channel mass factor at each grid point.
 
     Returns
     -------
@@ -232,19 +232,18 @@ def compile(
         grid=grid,
         momenta=momenta,
     )
+    mass_factor_grid_np: np.ndarray | None
     if mass_factor_grid is not None:
         if energies is None:
             msg = "`energies` is required when `mass_factor_grid` is provided."
             raise ValueError(msg)
-        if len(mass_factor_grid) != len(energies):
-            msg = (
-                f"`mass_factor_grid` length {len(mass_factor_grid)} must equal "
-                f"`energies` length {len(energies)}."
-            )
-            raise ValueError(msg)
-    mass_factor_grid_np = (
-        np.asarray(mass_factor_grid, dtype=np.float64) if mass_factor_grid is not None else None
-    )
+        n_e = len(np.asarray(energies))
+        n_c = len(tuple(channels))
+        mass_factor_grid_np = _broadcast_mass_factor_grid(
+            np.asarray(mass_factor_grid, dtype=np.float64), n_e, n_c
+        )
+    else:
+        mass_factor_grid_np = None
     boundary, energies_array = _prepare_boundary_data(
         channels=request.channels,
         energies=energies,
@@ -684,6 +683,42 @@ def _to_jax_array(values: np.ndarray) -> jax.Array:
 
     array: jax.Array = jnp.asarray(values)
     return array
+
+
+def _broadcast_mass_factor_grid(
+    arr: np.ndarray,
+    n_energies: int,
+    n_channels: int,
+) -> np.ndarray:
+    """Broadcast user-supplied mass_factor_grid to canonical (N_E, N_c) shape.
+
+    Accepts scalar, ``(N_E,)``, or ``(N_E, N_c)`` input.  Returns a
+    C-contiguous ``float64`` array of shape ``(N_E, N_c)``.
+    """
+
+    if arr.ndim == 0:
+        return np.full((n_energies, n_channels), float(arr), dtype=np.float64)
+    if arr.ndim == 1:
+        if arr.shape[0] != n_energies:
+            msg = (
+                f"`mass_factor_grid` length {arr.shape[0]} must equal "
+                f"`energies` length {n_energies}."
+            )
+            raise ValueError(msg)
+        return np.broadcast_to(arr[:, None], (n_energies, n_channels)).copy()
+    if arr.ndim == 2:
+        if arr.shape != (n_energies, n_channels):
+            msg = (
+                f"`mass_factor_grid` shape {arr.shape} must be "
+                f"({n_energies}, {n_channels}) = (N_E, N_c)."
+            )
+            raise ValueError(msg)
+        return arr.copy()
+    msg = (
+        "`mass_factor_grid` must be scalar, shape (N_E,), or shape (N_E, N_c), "
+        f"got ndim={arr.ndim}."
+    )
+    raise ValueError(msg)
 
 
 def _default_method(V_is_complex: bool) -> Method:

@@ -610,22 +610,24 @@ def _rmatrix_direct_grid(
     def one_energy_with_mu(
         potential: jax.Array,
         energy: jax.Array,
-        mu: jax.Array,
+        mu_row: jax.Array,  # (N_c,) per-channel mass factors
     ) -> jax.Array:
         hamiltonian = assemble_block_hamiltonian(
             mesh,
             operators,
             channels,
             potential,
-            mass_factor_override=mu,
+            mass_factor_override=mu_row,
         )
         # Hamiltonian assembled with override μ is in MeV; C = H_MeV − E·I.
-        # Q' = sqrt(μ)·Q (uniform μ per energy step).
+        # Q' = diag(repeat(sqrt(mu_row), N))·Q — per-channel scaling.
         matrix = hamiltonian - energy * jnp.eye(
             matrix_size,
             dtype=hamiltonian.dtype,
         )
-        q_prime_mu: jax.Array = jnp.sqrt(mu) * q
+        n = mesh.n
+        scale = jnp.repeat(jnp.sqrt(mu_row), n)  # (N_c·N,)
+        q_prime_mu: jax.Array = scale[:, None] * q
         solved = cast(
             jax.Array,
             jnp.linalg.solve(
@@ -636,6 +638,7 @@ def _rmatrix_direct_grid(
         return (q_prime_mu.T @ solved) / channel_radius
 
     if mass_factor_grid is not None:
+        # mass_factor_grid is (N_E, N_c); vmap slices to (N_c,) per energy step.
         return jax.vmap(one_energy_with_mu)(
             potentials,
             energies,
