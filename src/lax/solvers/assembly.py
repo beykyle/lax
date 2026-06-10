@@ -87,6 +87,12 @@ def assemble_block_hamiltonian(
                 )
             if potential.ndim == 3:
                 block = block + _diagonal_from_vector(potential[channel_index, coupled_index])
+            elif potential.ndim == 2:
+                # Pre-assembled (M, M) block (e.g. from Interaction.block): extract sub-block
+                # by slicing rather than channel indexing.
+                rs = channel_index * basis_size
+                cs = coupled_index * basis_size
+                block = block + potential[rs : rs + basis_size, cs : cs + basis_size]
             else:
                 block = block + potential[channel_index, coupled_index]
             row_blocks.append(block)

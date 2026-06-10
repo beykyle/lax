@@ -224,9 +224,9 @@ class _WavefunctionDirectKernel:
 
         if isinstance(potential, Interaction):
             block = potential.block[energy_index] if potential.energy_dependent else potential.block
-        elif potential.ndim in {4, 5}:
-            block = potential[energy_index]
         else:
+            # Raw array: pass as-is.  For energy-dependent arrays the caller must
+            # slice to the desired energy before calling (potential[energy_index]).
             block = potential
 
         return cast(
@@ -659,11 +659,17 @@ def _wavefunction_direct(
     channels: tuple[ChannelSpec, ...],
     matrix_size: int,
 ) -> jax.Array:
-    """Solve ``(H_MeV − E·I) ψ = source`` for the internal wavefunction."""
+    """Solve the internal wavefunction on the MeV direct path.
+
+    Computes ``m₀ · (H_MeV − E·I)⁻¹ source`` where ``m₀ = channels[0].mass_factor``.
+    The ``m₀`` factor makes the result equal to the fm⁻² spectral Green's function:
+    ``G_spectral = (H_fm2 − E/m)⁻¹ = m · (H_MeV − E·I)⁻¹``.
+    """
 
     hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
     matrix = hamiltonian - energy * jnp.eye(matrix_size, dtype=hamiltonian.dtype)
-    result: jax.Array = cast(jax.Array, jnp.linalg.solve(matrix, source))
+    m0 = channels[0].mass_factor  # evaluated at JIT-trace time (static)
+    result: jax.Array = cast(jax.Array, m0 * jnp.linalg.solve(matrix, source))
     return result
 
 

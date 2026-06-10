@@ -71,6 +71,12 @@ def make_wavefunction_source(
     >>> spec = solver.spectrum(V)
     >>> src  = lax.make_wavefunction_source(solver, channel_index=0, energy_index=5)
     >>> psi  = solver.wavefunction(spec, energies[5], src)
+
+    For the direct (linear-solve) path — no eigendecomposition required — compile
+    with ``solvers=("rmatrix_direct",)`` and use::
+
+        interaction = solver.interaction_from_block(V[0, 0])  # (M, M) block
+        psi = solver.wavefunction_direct(interaction, src, energy_index=5)
     """
     boundary: BoundaryValues | None = solver.boundary
     if boundary is None:

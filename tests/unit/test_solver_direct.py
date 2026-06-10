@@ -470,3 +470,49 @@ def test_per_channel_mass_factor_grid_decoupled_matches_single_channel() -> None
     # Off-diagonal must be zero for a decoupled potential.
     assert np.allclose(r_two[:, 0, 1], 0.0, atol=1.0e-10)
     assert np.allclose(r_two[:, 1, 0], 0.0, atol=1.0e-10)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: wavefunction_direct round-trip vs spectral wavefunction
+# ---------------------------------------------------------------------------
+
+
+def test_wavefunction_direct_matches_spectral_wavefunction() -> None:
+    """wavefunction_direct(interaction, source, i) equals spectral wavefunction(spec, E, source)."""
+
+    alpha = 0.2316053
+    beta = 1.3918324
+    energies = jnp.asarray([1.0, 5.0])
+
+    def yamaguchi_kernel(r1: jax.Array, r2: jax.Array) -> jax.Array:
+        return -2.0 * beta * (alpha + beta) ** 2 * jnp.exp(-beta * (r1 + r2)) * HBAR2_2MU
+
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=10, scale=8.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=HBAR2_2MU),),
+        operators=("T+L",),
+        solvers=("spectrum", "wavefunction", "rmatrix_direct"),
+        energies=energies,
+    )
+
+    V_raw = lm.assemble_nonlocal(solver.mesh, yamaguchi_kernel)  # (1, 1, N, N)
+    spec = solver.spectrum(V_raw)
+
+    assert solver.wavefunction is not None
+    assert solver.wavefunction_direct is not None
+    assert solver.interaction_from_block is not None
+
+    # Build Interaction from the pre-assembled (M, M) nonlocal block.
+    # For N_c=1, M=N, so V_raw[0, 0] is already (M, M).
+    interaction = solver.interaction_from_block(V_raw[0, 0], energy_dependent=False)
+
+    for energy_index in range(len(energies)):
+        energy = float(energies[energy_index])
+        src = lm.make_wavefunction_source(solver, channel_index=0, energy_index=energy_index)
+
+        psi_spec = np.asarray(solver.wavefunction(spec, energy, src))
+        psi_dir = np.asarray(solver.wavefunction_direct(interaction, src, energy_index))
+
+        assert np.allclose(psi_spec, psi_dir, atol=1.0e-10, rtol=1.0e-10), (
+            f"wavefunction_direct mismatch at energy_index={energy_index}"
+        )
