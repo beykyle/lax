@@ -192,12 +192,80 @@ class DirectRMatrixKernel(Protocol):
         Parameters
         ----------
         potential
-            Local potential array, shape ``(N_c, N_c, N)``.
+            Assembled potential array, shape ``(N_c, N_c, N)`` / ``(N_c, N_c, N, N)``
+            for energy-independent V, or an :class:`~lax.Interaction` object
+            (dispatch is handled transparently at the Python level).
 
         Returns
         -------
         jax.Array
             R-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``.
+        """
+        ...
+
+
+class SMatrixDirectObservable(Protocol):
+    """Callable that computes the direct S-matrix via per-energy linear solves."""
+
+    def __call__(self, potential: jax.Array) -> jax.Array:
+        """Evaluate the S-matrix on the compile-time energy grid.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential or :class:`~lax.Interaction`.
+
+        Returns
+        -------
+        jax.Array
+            S-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``, complex.
+        """
+        ...
+
+
+class PhasesDirectObservable(Protocol):
+    """Callable that computes direct phase shifts via per-energy linear solves."""
+
+    def __call__(self, potential: jax.Array) -> jax.Array:
+        """Evaluate phase shifts on the compile-time energy grid.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential or :class:`~lax.Interaction`.
+
+        Returns
+        -------
+        jax.Array
+            Phase shifts, shape ``(N_E, N_c)``, in radians.
+        """
+        ...
+
+
+class WavefunctionDirectObservable(Protocol):
+    """Callable that reconstructs the wavefunction via a direct linear solve."""
+
+    def __call__(
+        self,
+        potential: jax.Array,
+        source: jax.Array,
+        energy_index: int,
+    ) -> jax.Array:
+        """Solve ``C(E_i) ψ = source`` for the internal wavefunction.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential or :class:`~lax.Interaction`.
+        source
+            Mesh-space driving term, shape ``(N_c·N,)``.
+        energy_index
+            Index into the compile-time energy grid (Python int).
+
+        Returns
+        -------
+        jax.Array
+            Internal wavefunction coefficient vector, shape ``(N_c·N,)``.
         """
         ...
 
@@ -693,6 +761,12 @@ class Solver:
     rmatrix_direct_grid: DirectGridObservable | None = None
     smatrix_direct_grid: DirectGridObservable | None = None
     phases_direct_grid: DirectGridObservable | None = None
+    smatrix_direct: SMatrixDirectObservable | None = None
+    phases_direct: PhasesDirectObservable | None = None
+    wavefunction_direct: WavefunctionDirectObservable | None = None
+    interaction_from_block: Callable | None = None
+    interaction_from_array: Callable | None = None
+    interaction_from_funcs: Callable | None = None
     interpolate_rmatrix: InterpolatorBuilder | None = None
     interpolate_smatrix: InterpolatorBuilder | None = None
     interpolate_phases: InterpolatorBuilder | None = None
@@ -732,6 +806,9 @@ class Solver:
             "smatrix_grid",
             "phases_grid",
             "rmatrix_direct",
+            "smatrix_direct",
+            "phases_direct",
+            "wavefunction_direct",
         )
         _transform_names = (
             "to_grid_vector",
@@ -774,5 +851,8 @@ __all__ = [
     "SpectrumKernel",
     "SpectrumObservable",
     "TransformMatrices",
+    "PhasesDirectObservable",
+    "SMatrixDirectObservable",
+    "WavefunctionDirectObservable",
     "WavefunctionObservable",
 ]

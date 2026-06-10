@@ -31,22 +31,33 @@ from lax.boundary._types import (
     InterpolatorBuilder,
     Mesh,
     OperatorMatrices,
+    PhasesDirectObservable,
     RMatrixObservable,
+    SMatrixDirectObservable,
     Solver,
     SpectrumGridObservable,
     SpectrumKernel,
     SpectrumObservable,
     TransformMatrices,
+    WavefunctionDirectObservable,
     WavefunctionObservable,
 )
 from lax.meshes import build_mesh
+from lax.operators.interaction import (
+    make_interaction_from_array,
+    make_interaction_from_block,
+    make_interaction_from_funcs,
+)
 from lax.solvers import (
     bind_direct_grid_observables,
     bind_grid_observables,
     bind_interpolators,
     bind_observables,
+    make_direct_wavefunction_kernel,
+    make_phases_direct_observable,
     make_rmatrix_direct_grid_observable,
     make_rmatrix_direct_kernel,
+    make_smatrix_direct_observable,
     make_spectrum_kernel,
 )
 from lax.transforms import (
@@ -104,6 +115,12 @@ class _ObservableBundle:
     rmatrix_direct_grid: DirectGridObservable | None
     smatrix_direct_grid: DirectGridObservable | None
     phases_direct_grid: DirectGridObservable | None
+    smatrix_direct: SMatrixDirectObservable | None
+    phases_direct: PhasesDirectObservable | None
+    wavefunction_direct: WavefunctionDirectObservable | None
+    interaction_from_block: object | None
+    interaction_from_array: object | None
+    interaction_from_funcs: object | None
     interpolate_rmatrix: InterpolatorBuilder | None
     interpolate_smatrix: InterpolatorBuilder | None
     interpolate_phases: InterpolatorBuilder | None
@@ -522,6 +539,9 @@ def _bind_solver_observables(
     rmatrix_direct_grid_fn: DirectGridObservable | None = None
     smatrix_direct_grid_fn: DirectGridObservable | None = None
     phases_direct_grid_fn: DirectGridObservable | None = None
+    smatrix_direct_fn: SMatrixDirectObservable | None = None
+    phases_direct_fn: PhasesDirectObservable | None = None
+    wavefunction_direct_fn: WavefunctionDirectObservable | None = None
     if "rmatrix_direct" in request.solvers:
         rmatrix_direct_fn = make_rmatrix_direct_kernel(
             mesh,
@@ -529,6 +549,17 @@ def _bind_solver_observables(
             request.channels,
             energies,
             boundary,
+        )
+        from lax.solvers.linear_solve import _DirectRMatrixKernel  # noqa: PLC0415
+
+        if isinstance(rmatrix_direct_fn, _DirectRMatrixKernel):
+            smatrix_direct_fn = make_smatrix_direct_observable(rmatrix_direct_fn, boundary)
+            phases_direct_fn = make_phases_direct_observable(smatrix_direct_fn)
+        wavefunction_direct_fn = make_direct_wavefunction_kernel(
+            mesh,
+            operators,
+            request.channels,
+            energies,
         )
         if has_energy_grid:
             rmatrix_direct_grid_fn = make_rmatrix_direct_grid_observable(
@@ -554,6 +585,14 @@ def _bind_solver_observables(
             interpolate_phases_fn,
         ) = bind_interpolators(energies)
 
+    interaction_from_block_fn = None
+    interaction_from_array_fn = None
+    interaction_from_funcs_fn = None
+    if has_energy_grid:
+        interaction_from_block_fn = make_interaction_from_block(mesh, request.channels, energies)
+        interaction_from_array_fn = make_interaction_from_array(mesh, request.channels, energies)
+        interaction_from_funcs_fn = make_interaction_from_funcs(mesh, request.channels, energies)
+
     return _ObservableBundle(
         spectrum=spectrum_fn,
         rmatrix=rmatrix_fn,
@@ -569,6 +608,12 @@ def _bind_solver_observables(
         rmatrix_direct_grid=rmatrix_direct_grid_fn,
         smatrix_direct_grid=smatrix_direct_grid_fn,
         phases_direct_grid=phases_direct_grid_fn,
+        smatrix_direct=smatrix_direct_fn,
+        phases_direct=phases_direct_fn,
+        wavefunction_direct=wavefunction_direct_fn,
+        interaction_from_block=interaction_from_block_fn,
+        interaction_from_array=interaction_from_array_fn,
+        interaction_from_funcs=interaction_from_funcs_fn,
         interpolate_rmatrix=interpolate_rmatrix_fn,
         interpolate_smatrix=interpolate_smatrix_fn,
         interpolate_phases=interpolate_phases_fn,
@@ -616,6 +661,12 @@ def _assemble_solver(
         rmatrix_direct_grid=observables.rmatrix_direct_grid,
         smatrix_direct_grid=observables.smatrix_direct_grid,
         phases_direct_grid=observables.phases_direct_grid,
+        smatrix_direct=observables.smatrix_direct,
+        phases_direct=observables.phases_direct,
+        wavefunction_direct=observables.wavefunction_direct,
+        interaction_from_block=observables.interaction_from_block,
+        interaction_from_array=observables.interaction_from_array,
+        interaction_from_funcs=observables.interaction_from_funcs,
         interpolate_rmatrix=observables.interpolate_rmatrix,
         interpolate_smatrix=observables.interpolate_smatrix,
         interpolate_phases=observables.interpolate_phases,

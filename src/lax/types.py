@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+import jax
+import jax.numpy as jnp
+
 type MeshFamily = Literal["legendre", "laguerre"]
 type Regularization = Literal[
     "x",
@@ -84,8 +87,28 @@ class ChannelSpec:
     mass_factor: float
 
 
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class Interaction:
+    """Assembled coupled-channel potential block in MeV.
+
+    block : (M, M) or (N_E, M, M)  where M = N_c·N
+        Local terms on the per-channel diagonal, non-local terms as full
+        Gauss-scaled blocks. Symmetric. Mass-independent — per-channel mass
+        factors are applied by the solver, never folded into this block.
+        Excludes kinetic, centrifugal, threshold, and energy terms.
+    energy_dependent : bool (static)
+        True iff ``block`` has a leading (N_E,) axis aligned with the
+        compile-time energy grid.
+    """
+
+    block: jax.Array
+    energy_dependent: bool = field(metadata={"static": True})
+
+
 __all__ = [
     "ChannelSpec",
+    "Interaction",
     "MeshFamily",
     "MeshFamilyT",
     "MeshSpec",

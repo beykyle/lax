@@ -45,14 +45,18 @@ def test_make_rmatrix_direct_kernel_matches_manual_linear_solve() -> None:
     )
     result = np.asarray(kernel(potential))
 
+    # Manual computation using MeV form: H_MeV = m_c*(T+L) + V; C = H_MeV − E·I;
+    # R = Q'^T C^{-1} Q' / a where Q' = sqrt(m_c) · Q.
     hamiltonian = np.asarray(
         assemble_block_hamiltonian(solver.mesh, solver.operators, solver.channels, potential)
     )
     q = np.asarray(build_Q(solver.mesh, solver.channels))
+    m_c = channels[0].mass_factor
+    q_prime = np.sqrt(m_c) * q
     expected = []
     for energy in np.asarray(solver.energies):
-        matrix = hamiltonian - np.eye(hamiltonian.shape[0]) * (energy / channels[0].mass_factor)
-        expected.append((q.T @ np.linalg.solve(matrix, q)) / solver.mesh.scale)
+        matrix = hamiltonian - np.eye(hamiltonian.shape[0]) * energy
+        expected.append((q_prime.T @ np.linalg.solve(matrix, q_prime)) / solver.mesh.scale)
 
     assert np.allclose(result, np.stack(expected))
 
@@ -191,7 +195,9 @@ def test_direct_rmatrix_grid_matches_manual_per_energy_solve() -> None:
 
     result = np.asarray(solver.rmatrix_direct_grid(potentials))
     expected = []
+    m_c = solver.channels[0].mass_factor
     q = np.asarray(build_Q(solver.mesh, solver.channels))
+    q_prime = np.sqrt(m_c) * q
     for index, energy in enumerate(np.asarray(energies)):
         hamiltonian = np.asarray(
             assemble_block_hamiltonian(
@@ -201,10 +207,9 @@ def test_direct_rmatrix_grid_matches_manual_per_energy_solve() -> None:
                 potentials[index],
             )
         )
-        matrix = hamiltonian - np.eye(hamiltonian.shape[0]) * (
-            energy / solver.channels[0].mass_factor
-        )
-        expected.append((q.T @ np.linalg.solve(matrix, q)) / solver.mesh.scale)
+        # MeV form: C = H_MeV − E·I; R = Q'^T C^{-1} Q' / a.
+        matrix = hamiltonian - np.eye(hamiltonian.shape[0]) * energy
+        expected.append((q_prime.T @ np.linalg.solve(matrix, q_prime)) / solver.mesh.scale)
 
     assert np.allclose(result, np.stack(expected), atol=1.0e-10, rtol=1.0e-10)
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import jax
 import jax.numpy as jnp
@@ -17,9 +17,30 @@ from lax.boundary._types import (
     OperatorMatrices,
     PropagationMatrices,
 )
+from lax.spectral.matching import phases_from_S, smatrix_from_R
 from lax.types import ChannelSpec
 
 from .assembly import assemble_block_hamiltonian, build_Q
+
+if TYPE_CHECKING:
+    from lax.types import Interaction
+
+
+def _build_q_prime(
+    q: jax.Array,
+    channels: tuple[ChannelSpec, ...],
+    basis_size: int,
+) -> jax.Array:
+    """Build Q' = diag(repeat(sqrt(m_c), N)) @ Q.
+
+    Q has shape (N_c·N, N_c).  Each channel block c is scaled by sqrt(m_c)
+    so that R = Q'^T C_MeV^{-1} Q' / a equals the old fm⁻² result for
+    uniform μ and generalises to per-channel μ.  [DESIGN.md §11.5]
+    """
+    m_c = np.asarray([c.mass_factor for c in channels], dtype=np.float64)
+    scale = np.repeat(np.sqrt(m_c), basis_size)  # (N_c·N,) NumPy array
+    q_prime: jax.Array = jnp.asarray(scale[:, None], dtype=q.dtype) * q
+    return q_prime
 
 
 @dataclass(frozen=True)
@@ -31,13 +52,56 @@ class _DirectRMatrixKernel:
     channels: tuple[ChannelSpec, ...]
     energies: jax.Array
     q: jax.Array
+    q_prime: jax.Array
     channel_radius: float
     matrix_size: int
     mass_factor: float
     boundary: BoundaryValues | None
 
     def __call__(self, potential: jax.Array) -> jax.Array:
-        """Evaluate the direct R-matrix on the compile-time energy grid."""
+        """Evaluate the direct R-matrix on the compile-time energy grid.
+
+        Accepts either a raw potential array ``(N_c, N_c, N)`` / ``(N_c, N_c, N, N)``
+        or an :class:`~lax.Interaction` object.  When an ``Interaction`` with
+        ``energy_dependent=True`` is passed the per-energy block is used.
+        """
+        from lax.types import Interaction  # noqa: PLC0415
+
+        if isinstance(potential, Interaction):
+            if potential.energy_dependent:
+                return cast(
+                    jax.Array,
+                    _RMATRIX_DIRECT_GRID_JIT(
+                        potential.block,
+                        self.mesh,
+                        self.operators,
+                        self.channels,
+                        self.energies,
+                        self.q,
+                        self.q_prime,
+                        self.channel_radius,
+                        self.matrix_size,
+                        self.mass_factor,
+                        self.boundary,
+                        None,
+                    ),
+                )
+            else:
+                return cast(
+                    jax.Array,
+                    _RMATRIX_DIRECT_JIT(
+                        potential.block,
+                        self.mesh,
+                        self.operators,
+                        self.channels,
+                        self.energies,
+                        self.q_prime,
+                        self.channel_radius,
+                        self.matrix_size,
+                        self.mass_factor,
+                        self.boundary,
+                    ),
+                )
 
         return cast(
             jax.Array,
@@ -47,7 +111,7 @@ class _DirectRMatrixKernel:
                 self.operators,
                 self.channels,
                 self.energies,
-                self.q,
+                self.q_prime,
                 self.channel_radius,
                 self.matrix_size,
                 self.mass_factor,
@@ -65,6 +129,7 @@ class _DirectRMatrixGridObservable:
     channels: tuple[ChannelSpec, ...]
     energies: jax.Array
     q: jax.Array
+    q_prime: jax.Array
     channel_radius: float
     matrix_size: int
     mass_factor: float
@@ -83,11 +148,97 @@ class _DirectRMatrixGridObservable:
                 self.channels,
                 self.energies,
                 self.q,
+                self.q_prime,
                 self.channel_radius,
                 self.matrix_size,
                 self.mass_factor,
                 self.boundary,
                 self.mass_factor_grid,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class _SMatrixDirectObservable:
+    """Pickle-safe direct S-matrix observable derived from rmatrix_direct."""
+
+    rmatrix_direct: _DirectRMatrixKernel
+    boundary: BoundaryValues
+
+    def __call__(self, potential: jax.Array) -> jax.Array:
+        """Evaluate the S-matrix on the compile-time energy grid."""
+
+        r = self.rmatrix_direct(potential)
+        return cast(jax.Array, _DIRECT_SMATRIX_JIT(r, self.boundary))
+
+
+@dataclass(frozen=True)
+class _PhasesDirectObservable:
+    """Pickle-safe direct phase-shift observable derived from smatrix_direct."""
+
+    smatrix_direct: _SMatrixDirectObservable
+
+    def __call__(self, potential: jax.Array) -> jax.Array:
+        """Evaluate phase shifts on the compile-time energy grid."""
+
+        s = self.smatrix_direct(potential)
+        return cast(jax.Array, _DIRECT_PHASES_JIT(s))
+
+
+@dataclass(frozen=True)
+class _WavefunctionDirectKernel:
+    """Pickle-safe wavefunction kernel on the direct (linear-solve) path."""
+
+    mesh: Mesh
+    operators: OperatorMatrices
+    channels: tuple[ChannelSpec, ...]
+    energies: jax.Array
+    matrix_size: int
+
+    def __call__(
+        self,
+        potential: jax.Array,
+        source: jax.Array,
+        energy_index: int,
+    ) -> jax.Array:
+        """Solve ``C(E_i) x = source`` for the internal wavefunction.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential or :class:`~lax.Interaction`.  Shape
+            ``(N_c, N_c, N)`` / ``(N_c, N_c, N, N)`` (energy-independent) or
+            ``(N_E, N_c, N_c, N)`` / ``(N_E, N_c, N_c, N, N)`` (energy-dependent).
+            Also accepts an ``Interaction`` object.
+        source
+            Mesh-space driving term, shape ``(N_c·N,)``.
+        energy_index
+            Index into the compile-time energy grid (compile-time constant).
+
+        Returns
+        -------
+        jax.Array
+            Wavefunction coefficient vector, shape ``(N_c·N,)``.
+        """
+        from lax.types import Interaction  # noqa: PLC0415
+
+        if isinstance(potential, Interaction):
+            block = potential.block[energy_index] if potential.energy_dependent else potential.block
+        elif potential.ndim in {4, 5}:
+            block = potential[energy_index]
+        else:
+            block = potential
+
+        return cast(
+            jax.Array,
+            _WAVEFUNCTION_DIRECT_JIT(
+                block,
+                source,
+                self.energies[energy_index],
+                self.mesh,
+                self.operators,
+                self.channels,
+                self.matrix_size,
             ),
         )
 
@@ -101,9 +252,10 @@ def make_rmatrix_direct_kernel(
 ) -> DirectRMatrixKernel:
     """Build a JIT-compiled ``rmatrix_direct(V) → R`` kernel for the compile-time grid.
 
-    The returned kernel solves ``C(E) X = Q`` for each compile-time energy via
+    The returned kernel solves ``C(E) X = Q'`` for each compile-time energy via
     ``jnp.linalg.solve``, bypassing the eigendecomposition.  Supports real and
     complex potentials, local and non-local, propagated and non-propagated meshes.
+    Also accepts :class:`~lax.Interaction` objects directly.
     [DESIGN.md §11.3]
 
     Parameters
@@ -128,9 +280,10 @@ def make_rmatrix_direct_kernel(
     """
 
     q = build_Q(mesh, channels)
+    q_prime = _build_q_prime(q, channels, mesh.n)
     channel_radius = mesh.scale
     matrix_size = mesh.n * len(channels)
-    mass_factor = _uniform_mass_factor(channels)
+    mass_factor = channels[0].mass_factor  # used by propagated path only
     return cast(
         DirectRMatrixKernel,
         _DirectRMatrixKernel(
@@ -139,6 +292,7 @@ def make_rmatrix_direct_kernel(
             channels=channels,
             energies=energies,
             q=q,
+            q_prime=q_prime,
             channel_radius=channel_radius,
             matrix_size=matrix_size,
             mass_factor=mass_factor,
@@ -186,9 +340,10 @@ def make_rmatrix_direct_grid_observable(
     """
 
     q = build_Q(mesh, channels)
+    q_prime = _build_q_prime(q, channels, mesh.n)
     channel_radius = mesh.scale
     matrix_size = mesh.n * len(channels)
-    mass_factor = _uniform_mass_factor(channels)
+    mass_factor = channels[0].mass_factor  # used by propagated path only
     return cast(
         DirectGridObservable,
         _DirectRMatrixGridObservable(
@@ -197,6 +352,7 @@ def make_rmatrix_direct_grid_observable(
             channels=channels,
             energies=energies,
             q=q,
+            q_prime=q_prime,
             channel_radius=channel_radius,
             matrix_size=matrix_size,
             mass_factor=mass_factor,
@@ -206,13 +362,56 @@ def make_rmatrix_direct_grid_observable(
     )
 
 
+def make_smatrix_direct_observable(
+    rmatrix_kernel: _DirectRMatrixKernel,
+    boundary: BoundaryValues | None,
+) -> _SMatrixDirectObservable | None:
+    """Build a direct S-matrix observable from a direct R-matrix kernel."""
+
+    if boundary is None:
+        return None
+    return _SMatrixDirectObservable(rmatrix_direct=rmatrix_kernel, boundary=boundary)
+
+
+def make_phases_direct_observable(
+    smatrix_observable: _SMatrixDirectObservable | None,
+) -> _PhasesDirectObservable | None:
+    """Build a direct phase-shift observable from a direct S-matrix observable."""
+
+    if smatrix_observable is None:
+        return None
+    return _PhasesDirectObservable(smatrix_direct=smatrix_observable)
+
+
+def make_direct_wavefunction_kernel(
+    mesh: Mesh,
+    operators: OperatorMatrices,
+    channels: tuple[ChannelSpec, ...],
+    energies: jax.Array,
+) -> _WavefunctionDirectKernel:
+    """Build a direct wavefunction kernel ``(V, source, i) → ψ``.
+
+    Solves ``C(E_i) ψ = source`` where ``C = H_MeV − E_i · I`` using
+    ``jnp.linalg.solve``.  [DESIGN.md §11.3]
+    """
+
+    matrix_size = mesh.n * len(channels)
+    return _WavefunctionDirectKernel(
+        mesh=mesh,
+        operators=operators,
+        channels=channels,
+        energies=energies,
+        matrix_size=matrix_size,
+    )
+
+
 def _rmatrix_direct(
     potential: jax.Array,
     mesh: Mesh,
     operators: OperatorMatrices,
     channels: tuple[ChannelSpec, ...],
     energies: jax.Array,
-    q: jax.Array,
+    q_prime: jax.Array,
     channel_radius: float,
     matrix_size: int,
     mass_factor: float,
@@ -224,13 +423,19 @@ def _rmatrix_direct(
     ``mesh.propagation``, and to the local or non-local potential path
     depending on ``potential.ndim``.
 
+    The Hamiltonian is assembled in MeV (symmetric form), and the C matrix
+    is ``H_MeV − E·I``.  The surface projector ``Q'`` carries the per-channel
+    sqrt(m_c) factor so that ``R = Q'^T C^{-1} Q' / a`` equals the fm⁻² result
+    for uniform μ and generalises to per-channel μ.  [DESIGN.md §11.5]
+
     Parameters
     ----------
     potential
         Assembled potential in MeV.  Local: ``(N_c, N_c, N)``; non-local:
         ``(N_c, N_c, N, N)``.
-    mesh, operators, channels, energies, q, channel_radius, matrix_size, mass_factor, boundary
+    mesh, operators, channels, energies, q_prime, channel_radius, matrix_size, mass_factor, boundary
         Compile-time cached data forwarded from the kernel dataclass.
+        ``mass_factor`` is used only on the propagated path (fm⁻² units).
 
     Returns
     -------
@@ -285,8 +490,8 @@ def _rmatrix_direct(
     )
 
     def one_energy(energy: jax.Array) -> jax.Array:
-        energy_dimless = energy / mass_factor
-        matrix = hamiltonian - energy_dimless * jnp.eye(
+        # Hamiltonian is in MeV; C = H_MeV − E·I.
+        matrix = hamiltonian - energy * jnp.eye(
             matrix_size,
             dtype=hamiltonian.dtype,
         )
@@ -294,10 +499,10 @@ def _rmatrix_direct(
             jax.Array,
             jnp.linalg.solve(
                 matrix,
-                q,
+                q_prime,
             ),
         )
-        values: jax.Array = (q.T @ solved) / channel_radius
+        values: jax.Array = (q_prime.T @ solved) / channel_radius
         return values
 
     result: jax.Array = jax.vmap(one_energy)(energies)
@@ -311,6 +516,7 @@ def _rmatrix_direct_grid(
     channels: tuple[ChannelSpec, ...],
     energies: jax.Array,
     q: jax.Array,
+    q_prime: jax.Array,
     channel_radius: float,
     matrix_size: int,
     mass_factor: float,
@@ -328,8 +534,10 @@ def _rmatrix_direct_grid(
     potentials
         Per-energy potentials in MeV.  Local: ``(N_E, N_c, N_c, N)``; non-local:
         ``(N_E, N_c, N_c, N, N)``.
-    mesh, operators, channels, energies, q, channel_radius, matrix_size, mass_factor, boundary
-        Compile-time cached data.
+    mesh, operators, channels, energies, q, q_prime, channel_radius, matrix_size, mass_factor, boundary
+        Compile-time cached data.  ``q`` is the unscaled surface projector used
+        when ``mass_factor_grid`` overrides the per-channel values at JIT time.
+        ``mass_factor`` is used only on the propagated path.
 
     Returns
     -------
@@ -385,8 +593,8 @@ def _rmatrix_direct_grid(
             channels,
             potential,
         )
-        energy_dimless = energy / mass_factor
-        matrix = hamiltonian - energy_dimless * jnp.eye(
+        # Hamiltonian is in MeV; C = H_MeV − E·I.
+        matrix = hamiltonian - energy * jnp.eye(
             matrix_size,
             dtype=hamiltonian.dtype,
         )
@@ -394,10 +602,10 @@ def _rmatrix_direct_grid(
             jax.Array,
             jnp.linalg.solve(
                 matrix,
-                q,
+                q_prime,
             ),
         )
-        return (q.T @ solved) / channel_radius
+        return (q_prime.T @ solved) / channel_radius
 
     def one_energy_with_mu(
         potential: jax.Array,
@@ -411,19 +619,21 @@ def _rmatrix_direct_grid(
             potential,
             mass_factor_override=mu,
         )
-        energy_dimless = energy / mu
-        matrix = hamiltonian - energy_dimless * jnp.eye(
+        # Hamiltonian assembled with override μ is in MeV; C = H_MeV − E·I.
+        # Q' = sqrt(μ)·Q (uniform μ per energy step).
+        matrix = hamiltonian - energy * jnp.eye(
             matrix_size,
             dtype=hamiltonian.dtype,
         )
+        q_prime_mu: jax.Array = jnp.sqrt(mu) * q
         solved = cast(
             jax.Array,
             jnp.linalg.solve(
                 matrix,
-                q,
+                q_prime_mu,
             ),
         )
-        return (q.T @ solved) / channel_radius
+        return (q_prime_mu.T @ solved) / channel_radius
 
     if mass_factor_grid is not None:
         return jax.vmap(one_energy_with_mu)(
@@ -435,6 +645,54 @@ def _rmatrix_direct_grid(
         potentials,
         energies,
     )
+
+
+def _wavefunction_direct(
+    potential: jax.Array,
+    source: jax.Array,
+    energy: jax.Array,
+    mesh: Mesh,
+    operators: OperatorMatrices,
+    channels: tuple[ChannelSpec, ...],
+    matrix_size: int,
+) -> jax.Array:
+    """Solve ``(H_MeV − E·I) ψ = source`` for the internal wavefunction."""
+
+    hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
+    matrix = hamiltonian - energy * jnp.eye(matrix_size, dtype=hamiltonian.dtype)
+    result: jax.Array = cast(jax.Array, jnp.linalg.solve(matrix, source))
+    return result
+
+
+def _direct_smatrix_grid(
+    r_grid: jax.Array,
+    boundary: BoundaryValues,
+) -> jax.Array:
+    """Match an (N_E, N_c, N_c) R-matrix grid to the S-matrix grid."""
+
+    return cast(jax.Array, jax.vmap(smatrix_from_R)(r_grid, boundary))
+
+
+def _direct_phases_grid(s_grid: jax.Array) -> jax.Array:
+    """Extract phase shifts from an (N_E, N_c, N_c) S-matrix grid."""
+
+    return cast(jax.Array, jax.vmap(phases_from_S)(s_grid))
+
+
+_RMATRIX_DIRECT_JIT = jax.jit(
+    _rmatrix_direct,
+    static_argnames=("channels", "matrix_size"),
+)
+_RMATRIX_DIRECT_GRID_JIT = jax.jit(
+    _rmatrix_direct_grid,
+    static_argnames=("channels", "matrix_size"),
+)
+_WAVEFUNCTION_DIRECT_JIT = jax.jit(
+    _wavefunction_direct,
+    static_argnames=("channels", "matrix_size"),
+)
+_DIRECT_SMATRIX_JIT = jax.jit(_direct_smatrix_grid)
+_DIRECT_PHASES_JIT = jax.jit(_direct_phases_grid)
 
 
 def _propagated_rmatrix_at_energy(
@@ -591,25 +849,10 @@ def _surface_projector(
     return projector
 
 
-_RMATRIX_DIRECT_JIT = jax.jit(
-    _rmatrix_direct,
-    static_argnames=("channels", "matrix_size"),
-)
-_RMATRIX_DIRECT_GRID_JIT = jax.jit(
-    _rmatrix_direct_grid,
-    static_argnames=("channels", "matrix_size"),
-)
-
-
-def _uniform_mass_factor(channels: tuple[ChannelSpec, ...]) -> float:
-    """Return the shared mass factor expected by the MVP direct solver path."""
-
-    mass_factor = channels[0].mass_factor
-    for channel in channels[1:]:
-        if channel.mass_factor != mass_factor:
-            msg = "The MVP direct solver path requires a uniform mass_factor across channels."
-            raise ValueError(msg)
-    return mass_factor
-
-
-__all__ = ["make_rmatrix_direct_grid_observable", "make_rmatrix_direct_kernel"]
+__all__ = [
+    "make_direct_wavefunction_kernel",
+    "make_phases_direct_observable",
+    "make_rmatrix_direct_grid_observable",
+    "make_rmatrix_direct_kernel",
+    "make_smatrix_direct_observable",
+]

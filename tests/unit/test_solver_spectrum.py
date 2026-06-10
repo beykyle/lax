@@ -45,17 +45,18 @@ def test_build_q_places_boundary_values_in_channel_blocks() -> None:
 
 
 def test_assemble_block_hamiltonian_scales_threshold_and_local_potential() -> None:
-    """Assembly preserves the fm^-2 threshold and local-potential scaling."""
+    """Assembly uses the symmetric MeV form: m_c·(T+L) + E_threshold·I + V (untouched)."""
 
     mesh, operators = build_legendre_x(n=3, scale=5.0, operators={"T+L", "1/r^2"})
     channels = (ChannelSpec(l=0, threshold=2.0, mass_factor=4.0),)
     local_potential = jnp.asarray([[[1.0, 3.0, 5.0]]])
 
     hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, local_potential))
+    m_c = channels[0].mass_factor
     expected = (
-        np.asarray(operators.TpL)
-        + np.eye(3) * (channels[0].threshold / channels[0].mass_factor)
-        + np.diag(np.array([1.0, 3.0, 5.0]) / channels[0].mass_factor)
+        m_c * np.asarray(operators.TpL)
+        + np.eye(3) * channels[0].threshold
+        + np.diag(np.array([1.0, 3.0, 5.0]))
     )
 
     assert np.allclose(hamiltonian, expected)
@@ -70,8 +71,10 @@ def test_make_spectrum_kernel_matches_direct_eigh() -> None:
 
     kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
     spectrum = kernel(potential)
-    hamiltonian = assemble_block_hamiltonian(mesh, operators, channels, potential)
-    expected_eigenvalues, expected_eigenvectors = np.linalg.eigh(np.asarray(hamiltonian))
+    # Assembler returns H_MeV; spectrum path divides by m0 before eigh → fm⁻² eigenvalues.
+    m0 = channels[0].mass_factor
+    hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, potential)) / m0
+    expected_eigenvalues, expected_eigenvectors = np.linalg.eigh(hamiltonian)
     expected_surface_amplitudes = expected_eigenvectors.T @ np.asarray(build_Q(mesh, channels))
 
     assert np.allclose(np.asarray(spectrum.eigenvalues), expected_eigenvalues)
@@ -95,7 +98,9 @@ def test_make_spectrum_kernel_matches_complex_symmetric_eig() -> None:
         method="eig",
         keep_eigenvectors=True,
     )(potential)
-    hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, potential))
+    # Assembler returns H_MeV; spectrum path divides by m0 before eig → fm⁻² eigenvalues.
+    m0 = channels[0].mass_factor
+    hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, potential)) / m0
     expected_eigenvalues, expected_eigenvectors = np.linalg.eig(hamiltonian.astype(np.complex128))
     order = np.argsort(expected_eigenvalues.real)
     expected_eigenvalues = expected_eigenvalues[order]
@@ -268,9 +273,12 @@ def test_closed_channel_decoupling_matches_direct_bloch_updated_rmatrix() -> Non
 
     hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, potential))
     q = np.asarray(build_Q(mesh, channels))
-    base_matrix = hamiltonian - np.eye(hamiltonian.shape[0]) * (energy / channels[0].mass_factor)
-    base_solved = np.linalg.solve(base_matrix, q)
-    raw_rmatrix = (q.T @ base_solved) / mesh.scale
+    m_c = channels[0].mass_factor
+    q_prime = np.sqrt(m_c) * q
+    # MeV form: C = H_MeV - E*I; R = Q'^T C^{-1} Q' / a where Q' = sqrt(m_c)*Q
+    base_matrix = hamiltonian - np.eye(hamiltonian.shape[0]) * energy
+    base_solved = np.linalg.solve(base_matrix, q_prime)
+    raw_rmatrix = (q_prime.T @ base_solved) / mesh.scale
     bloch = np.asarray(
         _closed_channel_bloch(
             boundary.H_plus[0],
@@ -288,13 +296,14 @@ def test_closed_channel_decoupling_matches_direct_bloch_updated_rmatrix() -> Non
     )
 
     bloch_matrix = np.diag(bloch)
+    # Bloch correction in MeV form: scale by m_c
     updated_matrix = (
         hamiltonian
-        - (q @ bloch_matrix @ q.T) / mesh.scale
-        - np.eye(hamiltonian.shape[0]) * (energy / channels[0].mass_factor)
+        - m_c * (q @ bloch_matrix @ q.T) / mesh.scale
+        - np.eye(hamiltonian.shape[0]) * energy
     )
-    solved = np.linalg.solve(updated_matrix, q)
-    direct_rmatrix = (q.T @ solved) / mesh.scale
+    solved = np.linalg.solve(updated_matrix, q_prime)
+    direct_rmatrix = (q_prime.T @ solved) / mesh.scale
 
     assert np.allclose(decoupled[0, 0], direct_rmatrix[0, 0], atol=5.0e-5, rtol=5.0e-5)
 
