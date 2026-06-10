@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 import lax as lm
-from lax.meshes import build_mesh
 from lax.solvers import assemble_block_hamiltonian, build_Q, make_rmatrix_direct_kernel
 
 pytest.importorskip("jax")
@@ -14,12 +13,9 @@ pytest.importorskip("jax")
 HBAR2_2MU = 41.472
 
 
-def _make_energy_dependent_potential(solver: lm.Solver, energy: jax.Array) -> jax.Array:
-    """Return a smooth energy-dependent local potential in MeV."""
-
-    radii = solver.mesh.radii
-    values = (-3.5 * jnp.exp(-((radii / 2.4) ** 2)) + 0.02 * energy) * HBAR2_2MU
-    return values[None, None, :]
+def _energy_dep_V(r: jax.Array, E: float) -> jax.Array:
+    """Smooth energy-dependent local potential in MeV used across several tests."""
+    return (-3.5 * jnp.exp(-((r / 2.4) ** 2)) + 0.02 * E) * HBAR2_2MU
 
 
 def test_make_rmatrix_direct_kernel_matches_manual_linear_solve() -> None:
@@ -34,7 +30,10 @@ def test_make_rmatrix_direct_kernel_matches_manual_linear_solve() -> None:
         solvers=("rmatrix_direct",),
         energies=jnp.asarray([0.25, 0.75]),
     )
-    potential = jnp.asarray([[[0.1, 0.2, 0.3, 0.4]]])
+    g = jnp.asarray([0.1, 0.2, 0.3, 0.4])
+    interaction = solver.interaction_from_array(
+        local=[(g, np.ones((1, 1)))], energy_dependent=False
+    )
 
     kernel = make_rmatrix_direct_kernel(
         solver.mesh,
@@ -43,12 +42,14 @@ def test_make_rmatrix_direct_kernel_matches_manual_linear_solve() -> None:
         solver.energies,
         None,
     )
-    result = np.asarray(kernel(potential))
+    result = np.asarray(kernel(interaction))
 
     # Manual computation using MeV form: H_MeV = m_c*(T+L) + V; C = H_MeV − E·I;
     # R = Q'^T C^{-1} Q' / a where Q' = sqrt(m_c) · Q.
+    # assemble_block_hamiltonian with (1,1,4) raw array gives the same Hamiltonian.
+    potential_raw = jnp.asarray([[[0.1, 0.2, 0.3, 0.4]]])
     hamiltonian = np.asarray(
-        assemble_block_hamiltonian(solver.mesh, solver.operators, solver.channels, potential)
+        assemble_block_hamiltonian(solver.mesh, solver.operators, solver.channels, potential_raw)
     )
     q = np.asarray(build_Q(solver.mesh, solver.channels))
     m_c = channels[0].mass_factor
@@ -73,9 +74,13 @@ def test_compile_exposes_direct_rmatrix_kernel() -> None:
     )
 
     assert solver.rmatrix_direct is not None
-    assert solver.rmatrix_direct_grid is not None
-    assert solver.smatrix_direct_grid is not None
-    assert solver.phases_direct_grid is not None
+    assert solver.smatrix_direct is not None
+    assert solver.phases_direct is not None
+    assert solver.potential is not None
+    # deprecated aligned-grid observables are no longer wired
+    assert solver.rmatrix_direct_grid is None
+    assert solver.smatrix_direct_grid is None
+    assert solver.phases_direct_grid is None
     assert solver.interpolate_rmatrix is not None
     assert solver.interpolate_smatrix is not None
     assert solver.interpolate_phases is not None
@@ -162,8 +167,9 @@ def test_direct_rmatrix_matches_spectral_rmatrix_for_real_potential() -> None:
         solvers=("spectrum", "rmatrix", "rmatrix_direct"),
         energies=energies,
     )
-    potential = lm.assemble_nonlocal(solver.mesh, yamaguchi_kernel)
-    spectrum = solver.spectrum(potential)
+
+    V = solver.potential(yamaguchi_kernel)
+    spectrum = solver.spectrum(V)
 
     assert solver.rmatrix is not None
     assert solver.rmatrix_direct is not None
@@ -171,13 +177,13 @@ def test_direct_rmatrix_matches_spectral_rmatrix_for_real_potential() -> None:
     spectral = np.stack(
         [np.asarray(solver.rmatrix(spectrum, float(energy))) for energy in np.asarray(energies)]
     )
-    direct = np.asarray(solver.rmatrix_direct(potential))
+    direct = np.asarray(solver.rmatrix_direct(V))
 
     assert np.allclose(direct, spectral, atol=1.0e-10, rtol=1.0e-10)
 
 
 def test_direct_rmatrix_grid_matches_manual_per_energy_solve() -> None:
-    """`rmatrix_direct_grid` matches a manual per-energy linear solve with varying `V(E)`."""
+    """`rmatrix_direct(energy_dep_interaction)` matches a manual per-energy linear solve."""
 
     energies = jnp.asarray([0.25, 0.75, 1.25])
     solver = lm.compile(
@@ -189,11 +195,10 @@ def test_direct_rmatrix_grid_matches_manual_per_energy_solve() -> None:
         method="linear_solve",
         energy_dependent=True,
     )
-    potentials = jax.vmap(lambda energy: _make_energy_dependent_potential(solver, energy))(energies)
 
-    assert solver.rmatrix_direct_grid is not None
+    interaction = solver.potential(_energy_dep_V, energy_dependent=True)
+    result = np.asarray(solver.rmatrix_direct(interaction))
 
-    result = np.asarray(solver.rmatrix_direct_grid(potentials))
     expected = []
     m_c = solver.channels[0].mass_factor
     q = np.asarray(build_Q(solver.mesh, solver.channels))
@@ -204,7 +209,7 @@ def test_direct_rmatrix_grid_matches_manual_per_energy_solve() -> None:
                 solver.mesh,
                 solver.operators,
                 solver.channels,
-                potentials[index],
+                interaction.block[index],  # (M, M) per-energy block
             )
         )
         # MeV form: C = H_MeV − E·I; R = Q'^T C^{-1} Q' / a.
@@ -214,20 +219,8 @@ def test_direct_rmatrix_grid_matches_manual_per_energy_solve() -> None:
     assert np.allclose(result, np.stack(expected), atol=1.0e-10, rtol=1.0e-10)
 
 
-def test_assemble_nonlocal_rejects_propagated_mesh() -> None:
-    """Propagated meshes reject non-local kernel assembly explicitly."""
-
-    mesh, _ = build_mesh("legendre", "x", n=4, scale=8.0, operators={"T+L"}, n_intervals=2)
-
-    def nonlocal_kernel(r1: jax.Array, r2: jax.Array) -> jax.Array:
-        return -2.0 * jnp.exp(-0.5 * (r1 + r2))
-
-    with pytest.raises(ValueError, match="Non-local kernels"):
-        lm.assemble_nonlocal(mesh, nonlocal_kernel)
-
-
-def test_propagated_nonlocal_direct_rejects_inconsistent_request() -> None:
-    """Propagated direct solves reject non-local potentials instead of emulating them."""
+def test_rmatrix_direct_propagated_rejects_nonlocal_interaction() -> None:
+    """Propagated-mesh direct solves reject non-local Interactions with a clear ValueError."""
 
     propagated_solver = lm.compile(
         mesh=lm.MeshSpec("legendre", "x", n=4, scale=8.0, extras={"n_intervals": 2}),
@@ -238,16 +231,38 @@ def test_propagated_nonlocal_direct_rejects_inconsistent_request() -> None:
         method="linear_solve",
     )
 
-    potential = jnp.ones((1, 1, 8, 8), dtype=jnp.float64)
+    def nonlocal_kernel(r1: jax.Array, r2: jax.Array) -> jax.Array:
+        return -2.0 * jnp.exp(-0.5 * (r1 + r2))
+
+    assert propagated_solver.potential is not None
+    assert propagated_solver.rmatrix_direct is not None
+
+    nonlocal_interaction = propagated_solver.potential(nonlocal_kernel)
+
+    with pytest.raises(ValueError, match="Non-local propagated"):
+        propagated_solver.rmatrix_direct(nonlocal_interaction)
+
+
+def test_propagated_nonlocal_direct_rejects_non_interaction() -> None:
+    """Propagated direct solves reject non-Interaction inputs with a clear TypeError."""
+
+    propagated_solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=4, scale=8.0, extras={"n_intervals": 2}),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=jnp.asarray([0.3, 0.9]),
+        method="linear_solve",
+    )
 
     assert propagated_solver.rmatrix_direct is not None
 
-    with pytest.raises(ValueError, match="Non-local propagated solves"):
-        propagated_solver.rmatrix_direct(potential)
+    with pytest.raises(TypeError, match="Interaction"):
+        propagated_solver.rmatrix_direct(jnp.ones((4, 4), dtype=jnp.float64))
 
 
 def test_direct_grid_observables_match_spectral_grid_for_real_energy_dependent_potential() -> None:
-    """Direct aligned-grid `R/S/δ` agree with the spectral aligned-grid helpers."""
+    """Direct `R/S/δ` from `rmatrix_direct(energy_dep)` agree with spectral aligned-grid helpers."""
 
     energies = jnp.linspace(0.2, 2.0, 9)
     spectral_solver = lm.compile(
@@ -272,24 +287,28 @@ def test_direct_grid_observables_match_spectral_grid_for_real_energy_dependent_p
     assert spectral_solver.rmatrix_grid is not None
     assert spectral_solver.smatrix_grid is not None
     assert spectral_solver.phases_grid is not None
-    assert direct_solver.rmatrix_direct_grid is not None
-    assert direct_solver.smatrix_direct_grid is not None
-    assert direct_solver.phases_direct_grid is not None
+    assert direct_solver.rmatrix_direct is not None
+    assert direct_solver.smatrix_direct is not None
+    assert direct_solver.phases_direct is not None
+    # deprecated aligned-grid observables are no longer wired
+    assert direct_solver.rmatrix_direct_grid is None
+    assert direct_solver.smatrix_direct_grid is None
+    assert direct_solver.phases_direct_grid is None
 
-    spectral_potentials = jax.vmap(
-        lambda energy: _make_energy_dependent_potential(spectral_solver, energy)
-    )(energies)
-    direct_potentials = jax.vmap(
-        lambda energy: _make_energy_dependent_potential(direct_solver, energy)
-    )(energies)
-    spectra = jax.vmap(spectral_solver.spectrum)(spectral_potentials)
+    spectral_interaction = spectral_solver.potential(_energy_dep_V, energy_dependent=True)
+    direct_interaction = direct_solver.potential(_energy_dep_V, energy_dependent=True)
+
+    # Spectral path: vmap spectrum over the per-energy (M, M) block slices.
+    # Raw 2D blocks pass through the Interaction check in _SpectrumKernel.__call__.
+    spectra = jax.vmap(spectral_solver.spectrum)(spectral_interaction.block)
 
     spectral_r = np.asarray(spectral_solver.rmatrix_grid(spectra))
     spectral_s = np.asarray(spectral_solver.smatrix_grid(spectra))
     spectral_phases = np.asarray(spectral_solver.phases_grid(spectra))
-    direct_r = np.asarray(direct_solver.rmatrix_direct_grid(direct_potentials))
-    direct_s = np.asarray(direct_solver.smatrix_direct_grid(direct_potentials))
-    direct_phases = np.asarray(direct_solver.phases_direct_grid(direct_potentials))
+
+    direct_r = np.asarray(direct_solver.rmatrix_direct(direct_interaction))
+    direct_s = np.asarray(direct_solver.smatrix_direct(direct_interaction))
+    direct_phases = np.asarray(direct_solver.phases_direct(direct_interaction))
 
     assert np.allclose(direct_r, spectral_r, atol=1.0e-10, rtol=1.0e-10)
     assert np.allclose(direct_s, spectral_s, atol=1.0e-10, rtol=1.0e-10)
@@ -326,13 +345,14 @@ def test_mass_factor_grid_broadcast_scalar_reproduces_uniform() -> None:
         mass_factor_grid=jnp.full((2,), m),  # (N_E,) — broadcasts to (N_E, N_c)
     )
 
-    potentials = jax.vmap(lambda e: _make_energy_dependent_potential(solver_uniform, e))(energies)
+    assert solver_uniform.rmatrix_direct_grid is None  # deprecated
+    assert solver_grid.rmatrix_direct_grid is None  # deprecated
 
-    assert solver_uniform.rmatrix_direct_grid is not None
-    assert solver_grid.rmatrix_direct_grid is not None
+    interaction_uniform = solver_uniform.potential(_energy_dep_V, energy_dependent=True)
+    interaction_grid = solver_grid.potential(_energy_dep_V, energy_dependent=True)
 
-    r_uniform = np.asarray(solver_uniform.rmatrix_direct_grid(potentials))
-    r_grid = np.asarray(solver_grid.rmatrix_direct_grid(potentials))
+    r_uniform = np.asarray(solver_uniform.rmatrix_direct(interaction_uniform))
+    r_grid = np.asarray(solver_grid.rmatrix_direct(interaction_grid))
 
     assert np.allclose(r_uniform, r_grid, atol=1.0e-12, rtol=1.0e-12)
 
@@ -362,13 +382,14 @@ def test_mass_factor_grid_2d_reproduces_uniform() -> None:
         mass_factor_grid=jnp.full((2, 1), m),  # explicit (N_E, N_c) shape
     )
 
-    potentials = jax.vmap(lambda e: _make_energy_dependent_potential(solver_uniform, e))(energies)
+    assert solver_uniform.rmatrix_direct_grid is None  # deprecated
+    assert solver_grid.rmatrix_direct_grid is None  # deprecated
 
-    assert solver_uniform.rmatrix_direct_grid is not None
-    assert solver_grid.rmatrix_direct_grid is not None
+    interaction_uniform = solver_uniform.potential(_energy_dep_V, energy_dependent=True)
+    interaction_grid = solver_grid.potential(_energy_dep_V, energy_dependent=True)
 
-    r_uniform = np.asarray(solver_uniform.rmatrix_direct_grid(potentials))
-    r_grid = np.asarray(solver_grid.rmatrix_direct_grid(potentials))
+    r_uniform = np.asarray(solver_uniform.rmatrix_direct(interaction_uniform))
+    r_grid = np.asarray(solver_grid.rmatrix_direct(interaction_grid))
 
     assert np.allclose(r_uniform, r_grid, atol=1.0e-12, rtol=1.0e-12)
 
@@ -437,32 +458,29 @@ def test_per_channel_mass_factor_grid_decoupled_matches_single_channel() -> None
         energy_dependent=True,
     )
 
-    # Decoupled diagonal potential: channel 0 gets g0, channel 1 gets g1.
-    radii = two_ch.mesh.radii
-    g0 = -0.5 * jnp.exp(-(radii / 2.5) ** 2) * m0
-    g1 = -0.3 * jnp.exp(-(radii / 3.0) ** 2) * m1
-    zeros = jnp.zeros_like(g0)
+    assert two_ch.rmatrix_direct_grid is None  # deprecated
+    assert ch0_solver.rmatrix_direct_grid is None  # deprecated
+    assert ch1_solver.rmatrix_direct_grid is None  # deprecated
 
-    def two_ch_pot(_energy: jax.Array) -> jax.Array:
-        return jnp.array([[g0, zeros], [zeros, g1]])  # (2, 2, N)
+    # Decoupled diagonal potentials (energy-independent in value, energy-dependent in API).
+    def V_ch0_fn(r: jax.Array, E: float) -> jax.Array:
+        return -0.5 * jnp.exp(-((r / 2.5) ** 2)) * m0
 
-    def ch0_pot(_energy: jax.Array) -> jax.Array:
-        return jnp.array([[[*g0]]])  # (1, 1, N)
+    def V_ch1_fn(r: jax.Array, E: float) -> jax.Array:
+        return -0.3 * jnp.exp(-((r / 3.0) ** 2)) * m1
 
-    def ch1_pot(_energy: jax.Array) -> jax.Array:
-        return jnp.array([[[*g1]]])  # (1, 1, N)
+    A0 = np.array([[1.0, 0.0], [0.0, 0.0]])
+    A1 = np.array([[0.0, 0.0], [0.0, 1.0]])
 
-    two_pots = jax.vmap(two_ch_pot)(energies)
-    ch0_pots = jax.vmap(ch0_pot)(energies)
-    ch1_pots = jax.vmap(ch1_pot)(energies)
+    V_two = two_ch.potential(V_ch0_fn, coupling=A0, energy_dependent=True) + two_ch.potential(
+        V_ch1_fn, coupling=A1, energy_dependent=True
+    )
+    V_ch0 = ch0_solver.potential(V_ch0_fn, energy_dependent=True)
+    V_ch1 = ch1_solver.potential(V_ch1_fn, energy_dependent=True)
 
-    assert two_ch.rmatrix_direct_grid is not None
-    assert ch0_solver.rmatrix_direct_grid is not None
-    assert ch1_solver.rmatrix_direct_grid is not None
-
-    r_two = np.asarray(two_ch.rmatrix_direct_grid(two_pots))  # (N_E, 2, 2)
-    r_ch0 = np.asarray(ch0_solver.rmatrix_direct_grid(ch0_pots))  # (N_E, 1, 1)
-    r_ch1 = np.asarray(ch1_solver.rmatrix_direct_grid(ch1_pots))  # (N_E, 1, 1)
+    r_two = np.asarray(two_ch.rmatrix_direct(V_two))  # (N_E, 2, 2)
+    r_ch0 = np.asarray(ch0_solver.rmatrix_direct(V_ch0))  # (N_E, 1, 1)
+    r_ch1 = np.asarray(ch1_solver.rmatrix_direct(V_ch1))  # (N_E, 1, 1)
 
     # Diagonal elements of decoupled two-channel solver must match single-channel results.
     assert np.allclose(r_two[:, 0, 0], r_ch0[:, 0, 0], atol=1.0e-10, rtol=1.0e-10)
@@ -495,23 +513,19 @@ def test_wavefunction_direct_matches_spectral_wavefunction() -> None:
         energies=energies,
     )
 
-    V_raw = lm.assemble_nonlocal(solver.mesh, yamaguchi_kernel)  # (1, 1, N, N)
-    spec = solver.spectrum(V_raw)
-
     assert solver.wavefunction is not None
     assert solver.wavefunction_direct is not None
-    assert solver.interaction_from_block is not None
+    assert solver.potential is not None
 
-    # Build Interaction from the pre-assembled (M, M) nonlocal block.
-    # For N_c=1, M=N, so V_raw[0, 0] is already (M, M).
-    interaction = solver.interaction_from_block(V_raw[0, 0], energy_dependent=False)
+    V = solver.potential(yamaguchi_kernel)
+    spec = solver.spectrum(V)
 
     for energy_index in range(len(energies)):
         energy = float(energies[energy_index])
         src = lm.make_wavefunction_source(solver, channel_index=0, energy_index=energy_index)
 
         psi_spec = np.asarray(solver.wavefunction(spec, energy, src))
-        psi_dir = np.asarray(solver.wavefunction_direct(interaction, src, energy_index))
+        psi_dir = np.asarray(solver.wavefunction_direct(V, src, energy_index))
 
         assert np.allclose(psi_spec, psi_dir, atol=1.0e-10, rtol=1.0e-10), (
             f"wavefunction_direct mismatch at energy_index={energy_index}"

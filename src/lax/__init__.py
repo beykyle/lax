@@ -19,7 +19,6 @@ import lax.models as models
 import lax.spectral as spectral
 from lax.boundary._types import Solver
 from lax.compile import compile
-from lax.operators.potential import assemble_local, assemble_nonlocal
 from lax.types import ChannelSpec, Interaction, MeshSpec
 from lax.wavefunction import make_wavefunction_source
 
@@ -28,8 +27,6 @@ __all__ = [
     "Interaction",
     "MeshSpec",
     "Solver",
-    "assemble_local",
-    "assemble_nonlocal",
     "compile",
     "constants",
     "make_wavefunction_source",

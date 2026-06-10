@@ -67,7 +67,7 @@ def make_wavefunction_source(
     ...     solvers=("spectrum", "wavefunction"),
     ...     energies=energies,
     ... )
-    >>> V = lax.assemble_nonlocal(solver.mesh, lambda r1, r2: jnp.zeros_like(r1))
+    >>> V = solver.potential(lambda r1, r2: jnp.zeros_like(r1))
     >>> spec = solver.spectrum(V)
     >>> src  = lax.make_wavefunction_source(solver, channel_index=0, energy_index=5)
     >>> psi  = solver.wavefunction(spec, energies[5], src)

@@ -73,7 +73,20 @@ def _open_channel_potential(radii: jax.Array) -> jax.Array:
     return _toy_potential(radii, 0, 0)
 
 
-def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential: jax.Array) -> np.ndarray:
+def _to_interaction_2ch(solver: lm.Solver, fn) -> object:
+    """Build a 2-channel Interaction from a fn(radii, c, cp) potential."""
+    A00 = np.array([[1.0, 0.0], [0.0, 0.0]])
+    A01 = np.array([[0.0, 1.0], [1.0, 0.0]])
+    A11 = np.array([[0.0, 0.0], [0.0, 1.0]])
+    assert solver.potential is not None
+    return (
+        solver.potential(lambda r: fn(r, 0, 0), coupling=A00)
+        + solver.potential(lambda r: fn(r, 0, 1), coupling=A01)
+        + solver.potential(lambda r: fn(r, 1, 1), coupling=A11)
+    )
+
+
+def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential) -> np.ndarray:
     """Evaluate the physical S-matrix from the direct R-matrix kernel."""
 
     assert solver.rmatrix_direct is not None
@@ -118,14 +131,14 @@ def test_coupled_closed_channel_spectral_and_direct_paths_agree() -> None:
 
     spectral_solver = _coupled_solver("eigh", ("spectrum", "smatrix"))
     direct_solver = _coupled_solver("linear_solve", ("rmatrix_direct",))
-    potential = lm.assemble_local(spectral_solver.mesh, _toy_potential, n_channels=2)
-    direct_potential = lm.assemble_local(direct_solver.mesh, _toy_potential, n_channels=2)
+    spectral_V = _to_interaction_2ch(spectral_solver, _toy_potential)
+    direct_V = _to_interaction_2ch(direct_solver, _toy_potential)
 
     assert spectral_solver.spectrum is not None
     assert spectral_solver.smatrix is not None
 
-    spectral_smatrix = np.asarray(spectral_solver.smatrix(spectral_solver.spectrum(potential)))
-    direct_smatrix = _smatrix_from_direct_rmatrix(direct_solver, direct_potential)
+    spectral_smatrix = np.asarray(spectral_solver.smatrix(spectral_solver.spectrum(spectral_V)))
+    direct_smatrix = _smatrix_from_direct_rmatrix(direct_solver, direct_V)
     below_threshold = ENERGIES < CHANNEL_THRESHOLD
     above_threshold = np.logical_not(below_threshold)
 
@@ -143,20 +156,18 @@ def test_coupled_closed_channel_decoupled_limit_matches_single_channel() -> None
 
     coupled_solver = _coupled_solver("eigh", ("spectrum", "smatrix"))
     single_channel_solver = _single_channel_solver()
-    coupled_potential = lm.assemble_local(coupled_solver.mesh, _decoupled_potential, n_channels=2)
-    single_channel_potential = lm.assemble_local(
-        single_channel_solver.mesh,
-        _open_channel_potential,
-    )
+    coupled_V = _to_interaction_2ch(coupled_solver, _decoupled_potential)
+    assert single_channel_solver.potential is not None
+    single_channel_V = single_channel_solver.potential(_open_channel_potential)
 
     assert coupled_solver.spectrum is not None
     assert coupled_solver.smatrix is not None
     assert single_channel_solver.spectrum is not None
     assert single_channel_solver.smatrix is not None
 
-    coupled_smatrix = np.asarray(coupled_solver.smatrix(coupled_solver.spectrum(coupled_potential)))
+    coupled_smatrix = np.asarray(coupled_solver.smatrix(coupled_solver.spectrum(coupled_V)))
     single_channel_smatrix = np.asarray(
-        single_channel_solver.smatrix(single_channel_solver.spectrum(single_channel_potential))
+        single_channel_solver.smatrix(single_channel_solver.spectrum(single_channel_V))
     )
 
     assert np.allclose(

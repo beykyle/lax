@@ -53,7 +53,7 @@ def _complex_yamaguchi_kernel(r1, r2, imag_strength):
     return _yamaguchi_kernel(r1, r2) * (1.0 + 1.0j * imag_strength)
 
 
-def _phase_from_direct_rmatrix(solver, potential):
+def _phase_from_direct_rmatrix(solver, interaction):
     """Evaluate phase shifts from `solver.rmatrix_direct` on the compile-time energy grid."""
 
     import jax.numpy as jnp
@@ -64,7 +64,7 @@ def _phase_from_direct_rmatrix(solver, potential):
     assert solver.rmatrix_direct is not None
     assert solver.boundary is not None
 
-    r_values = solver.rmatrix_direct(potential)
+    r_values = solver.rmatrix_direct(interaction)
     phases = []
     for energy_index in range(r_values.shape[0]):
         boundary = BoundaryValues(
@@ -99,7 +99,7 @@ def test_yamaguchi_phase_shifts(reference: YamaguchiReference) -> None:
         solvers=("spectrum", "phases"),
         energies=jnp.asarray(reference.energies),
     )
-    potential = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
+    potential = solver.potential(_yamaguchi_kernel)
     spectrum = solver.spectrum(potential)
     phases_deg = np.asarray(solver.phases(spectrum))[:, 0] * (180.0 / np.pi)
 
@@ -125,8 +125,8 @@ def test_yamaguchi_phase_shifts_direct_rmatrix(reference: YamaguchiReference) ->
         energies=reference.energies,
         method="linear_solve",
     )
-    potential = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
-    phases_deg = np.asarray(_phase_from_direct_rmatrix(solver, potential))[:, 0] * (180.0 / np.pi)
+    V = solver.potential(_yamaguchi_kernel)
+    phases_deg = np.asarray(_phase_from_direct_rmatrix(solver, V))[:, 0] * (180.0 / np.pi)
 
     assert np.allclose(phases_deg, reference.phases_deg, atol=1.0e-2, rtol=0.0)
 
@@ -149,10 +149,10 @@ def test_yamaguchi_direct_matches_spectral(reference: YamaguchiReference) -> Non
         solvers=("spectrum", "rmatrix", "phases", "rmatrix_direct"),
         energies=reference.energies,
     )
-    potential = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
-    spectrum = solver.spectrum(potential)
+    V = solver.potential(_yamaguchi_kernel)
+    spectrum = solver.spectrum(V)
     spectral_delta = np.asarray(solver.phases(spectrum))[:, 0]
-    direct_delta = np.asarray(_phase_from_direct_rmatrix(solver, potential))[:, 0]
+    direct_delta = np.asarray(_phase_from_direct_rmatrix(solver, V))[:, 0]
 
     assert np.allclose(direct_delta, spectral_delta, atol=1.0e-10, rtol=1.0e-10)
 
@@ -172,7 +172,7 @@ def test_yamaguchi_large_radius_matches_baye_reference(a, n, E, ref_deg, tol):
         solvers=("spectrum", "phases"),
         energies=jnp.array([E]),
     )
-    potential = lm.assemble_nonlocal(solver.mesh, _yamaguchi_kernel)
+    potential = solver.potential(_yamaguchi_kernel)
     delta = float(solver.phases(solver.spectrum(potential))[0, 0]) * (180.0 / np.pi)
 
     assert abs(delta - ref_deg) < tol, (
@@ -205,10 +205,9 @@ def test_complex_yamaguchi_eig_matches_real_limit(a, n, E):
         V_is_complex=True,
         method="eig",
     )
-    real_potential = lm.assemble_nonlocal(real_solver.mesh, _yamaguchi_kernel)
-    complex_potential = lm.assemble_nonlocal(
-        complex_solver.mesh,
-        lambda r1, r2: _complex_yamaguchi_kernel(r1, r2, imag_strength),
+    real_potential = real_solver.potential(_yamaguchi_kernel)
+    complex_potential = complex_solver.potential(
+        lambda r1, r2: _complex_yamaguchi_kernel(r1, r2, imag_strength)
     )
     real_phase = float(real_solver.phases(real_solver.spectrum(real_potential))[0, 0])
     complex_phase = float(complex_solver.phases(complex_solver.spectrum(complex_potential))[0, 0])

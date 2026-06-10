@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 import jax
-import jax.numpy as jnp
 
 type MeshFamily = Literal["legendre", "laguerre"]
 type Regularization = Literal[
@@ -104,6 +103,26 @@ class Interaction:
 
     block: jax.Array
     energy_dependent: bool = field(metadata={"static": True})
+
+    def __add__(self, other: object) -> Interaction:
+        """Combine two Interaction blocks by summing their potential contributions.
+
+        Energy-independent + energy-independent → energy-independent.
+        Any combination involving an energy-dependent term → energy-dependent,
+        broadcasting ``(M, M)`` to ``(1, M, M)`` before adding.
+        """
+        if not isinstance(other, Interaction):
+            return NotImplemented
+        if not self.energy_dependent and not other.energy_dependent:
+            return Interaction(block=self.block + other.block, energy_dependent=False)
+        b1 = self.block if self.energy_dependent else self.block[None]
+        b2 = other.block if other.energy_dependent else other.block[None]
+        return Interaction(block=b1 + b2, energy_dependent=True)
+
+    def __radd__(self, other: object) -> Interaction:
+        if other == 0:
+            return self
+        return NotImplemented
 
 
 __all__ = [

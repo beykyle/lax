@@ -37,13 +37,17 @@ class _SpectrumKernel:
         Parameters
         ----------
         potential
-            Assembled potential array, shape ``(N_c, N_c, N)`` for local or
-            ``(N_c, N_c, N, N)`` for non-local.
+            :class:`~lax.Interaction` object built by ``solver.potential()`` or
+            ``solver.interaction_from_{block,array,funcs}()``.  Must have
+            ``energy_dependent=False`` (one eigendecomposition per potential).
+            For energy-dependent workflows, vmap over per-energy blocks::
+
+                jax.vmap(solver.spectrum)(interaction_list)
+
         mass_factor
             Optional energy-dependent ℏ²/2μ value in MeV·fm².  When provided,
-            overrides ``ChannelSpec.mass_factor`` in the Hamiltonian assembly so
-            that ``threshold/μ(E)`` and ``V/μ(E)`` use the correct per-energy
-            value.  Typical usage::
+            overrides ``ChannelSpec.mass_factor`` in the Hamiltonian assembly.
+            Typical usage::
 
                 spectra = jax.vmap(
                     lambda V, mu: solver.spectrum(V, mass_factor=mu)
@@ -54,6 +58,15 @@ class _SpectrumKernel:
         Spectrum
             Eigendecomposition of the Bloch-augmented Hamiltonian.
         """
+        from lax.types import Interaction  # noqa: PLC0415
+
+        if isinstance(potential, Interaction):
+            if potential.energy_dependent:
+                raise TypeError(
+                    "spectrum() does not accept energy-dependent Interactions directly. "
+                    "Vmap over per-energy blocks: jax.vmap(solver.spectrum)(interaction.block)."
+                )
+            potential = potential.block
 
         if self.method == "eigh":
             return cast(
@@ -144,9 +157,7 @@ def _spectrum_eigh(
 ) -> Spectrum:
     """Return the Hermitian spectrum for one potential."""
 
-    H_MeV = assemble_block_hamiltonian(
-        mesh, operators, channels, potential, mass_factor_override
-    )
+    H_MeV = assemble_block_hamiltonian(mesh, operators, channels, potential, mass_factor_override)
     if mass_factor_override is not None and jnp.ndim(mass_factor_override) == 0:
         m0 = mass_factor_override
     else:
@@ -177,9 +188,7 @@ def _spectrum_eig(
 ) -> Spectrum:
     """Return the complex-symmetric spectrum for one potential."""
 
-    H_MeV = assemble_block_hamiltonian(
-        mesh, operators, channels, potential, mass_factor_override
-    )
+    H_MeV = assemble_block_hamiltonian(mesh, operators, channels, potential, mass_factor_override)
     if mass_factor_override is not None and jnp.ndim(mass_factor_override) == 0:
         m0 = mass_factor_override
     else:

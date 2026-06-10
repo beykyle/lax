@@ -138,11 +138,20 @@ def test_smatrix_from_R_is_symmetric_and_unitary_for_real_two_channel_r() -> Non
         solvers=("spectrum", "rmatrix"),
         energies=energy,
     )
-    potential = lm.assemble_local(solver.mesh, reid_np_j1_potential, n_channels=2)
     assert solver.spectrum is not None
     assert solver.rmatrix is not None
     assert solver.boundary is not None
+    assert solver.interaction_from_array is not None
 
+    r = solver.mesh.radii
+    potential = solver.interaction_from_array(
+        local=[
+            (reid_np_j1_potential(r, 0, 0), np.array([[1.0, 0.0], [0.0, 0.0]])),
+            (reid_np_j1_potential(r, 0, 1), np.array([[0.0, 1.0], [1.0, 0.0]])),
+            (reid_np_j1_potential(r, 1, 1), np.array([[0.0, 0.0], [0.0, 1.0]])),
+        ],
+        energy_dependent=False,
+    )
     spectrum = solver.spectrum(potential)
     R = solver.rmatrix(spectrum, float(energy[0]))
     boundary = BoundaryValues(

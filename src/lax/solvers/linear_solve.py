@@ -23,7 +23,7 @@ from lax.types import ChannelSpec
 from .assembly import assemble_block_hamiltonian, build_Q
 
 if TYPE_CHECKING:
-    from lax.types import Interaction
+    pass
 
 
 def _build_q_prime(
@@ -57,56 +57,104 @@ class _DirectRMatrixKernel:
     matrix_size: int
     mass_factor: float
     boundary: BoundaryValues | None
+    mass_factor_grid: jax.Array | None = None
 
     def __call__(self, potential: jax.Array) -> jax.Array:
         """Evaluate the direct R-matrix on the compile-time energy grid.
 
-        Accepts either a raw potential array ``(N_c, N_c, N)`` / ``(N_c, N_c, N, N)``
-        or an :class:`~lax.Interaction` object.  When an ``Interaction`` with
-        ``energy_dependent=True`` is passed the per-energy block is used.
+        Parameters
+        ----------
+        potential
+            :class:`~lax.Interaction` object built by ``solver.potential()`` or
+            ``solver.interaction_from_{block,array,funcs}()``.  Energy-dependent
+            interactions (``energy_dependent=True``) use the per-energy block path.
+
+            :class:`~lax.Interaction` object built by ``solver.potential()`` or
+            ``solver.interaction_from_{block,array,funcs}()``.  For propagated meshes,
+            local energy-independent Interactions are supported: the per-interval
+            ``(N_c, N_c, N)`` array is extracted from the block diagonals.
         """
         from lax.types import Interaction  # noqa: PLC0415
 
-        if isinstance(potential, Interaction):
+        # Propagated meshes use per-interval raw (N_c, N_c, N) arrays.
+        # Extract from Interaction.block by taking the diagonal of each sub-block.
+        if self.mesh.propagation is not None:
+            if not isinstance(potential, Interaction):
+                raise TypeError(
+                    "rmatrix_direct() accepts only Interaction objects. "
+                    "Use solver.potential(fn) or solver.interaction_from_block(block)."
+                )
             if potential.energy_dependent:
-                return cast(
-                    jax.Array,
-                    _RMATRIX_DIRECT_GRID_JIT(
-                        potential.block,
-                        self.mesh,
-                        self.operators,
-                        self.channels,
-                        self.energies,
-                        self.q,
-                        self.q_prime,
-                        self.channel_radius,
-                        self.matrix_size,
-                        self.mass_factor,
-                        self.boundary,
-                        None,
-                    ),
+                raise TypeError(
+                    "rmatrix_direct() does not support energy-dependent Interactions "
+                    "on propagated meshes."
                 )
-            else:
-                return cast(
-                    jax.Array,
-                    _RMATRIX_DIRECT_JIT(
-                        potential.block,
-                        self.mesh,
-                        self.operators,
-                        self.channels,
-                        self.energies,
-                        self.q_prime,
-                        self.channel_radius,
-                        self.matrix_size,
-                        self.mass_factor,
-                        self.boundary,
-                    ),
-                )
+            N_c = len(self.channels)
+            N = self.mesh.n
+            # Propagated path supports only local Interactions: sub-blocks must be diagonal.
+            for c in range(N_c):
+                for cp in range(N_c):
+                    sub = np.asarray(potential.block[c * N : (c + 1) * N, cp * N : (cp + 1) * N])
+                    if np.any(sub != np.diag(np.diag(sub))):
+                        raise ValueError(
+                            "rmatrix_direct() on propagated meshes supports only local "
+                            "Interactions. Non-local propagated direct solves are not supported."
+                        )
+            potential = jnp.stack(
+                [
+                    jnp.stack(
+                        [
+                            jnp.diag(potential.block[c * N : (c + 1) * N, cp * N : (cp + 1) * N])
+                            for cp in range(N_c)
+                        ]
+                    )
+                    for c in range(N_c)
+                ]
+            )
+            return cast(
+                jax.Array,
+                _RMATRIX_DIRECT_JIT(
+                    potential,
+                    self.mesh,
+                    self.operators,
+                    self.channels,
+                    self.energies,
+                    self.q_prime,
+                    self.channel_radius,
+                    self.matrix_size,
+                    self.mass_factor,
+                    self.boundary,
+                ),
+            )
 
+        if not isinstance(potential, Interaction):
+            raise TypeError(
+                "rmatrix_direct() accepts only Interaction objects. "
+                "Use solver.potential() or solver.interaction_from_block/array/funcs to build one."
+            )
+
+        if potential.energy_dependent:
+            return cast(
+                jax.Array,
+                _RMATRIX_DIRECT_GRID_JIT(
+                    potential.block,
+                    self.mesh,
+                    self.operators,
+                    self.channels,
+                    self.energies,
+                    self.q,
+                    self.q_prime,
+                    self.channel_radius,
+                    self.matrix_size,
+                    self.mass_factor,
+                    self.boundary,
+                    self.mass_factor_grid,
+                ),
+            )
         return cast(
             jax.Array,
             _RMATRIX_DIRECT_JIT(
-                potential,
+                potential.block,
                 self.mesh,
                 self.operators,
                 self.channels,
@@ -206,10 +254,8 @@ class _WavefunctionDirectKernel:
         Parameters
         ----------
         potential
-            Assembled potential or :class:`~lax.Interaction`.  Shape
-            ``(N_c, N_c, N)`` / ``(N_c, N_c, N, N)`` (energy-independent) or
-            ``(N_E, N_c, N_c, N)`` / ``(N_E, N_c, N_c, N, N)`` (energy-dependent).
-            Also accepts an ``Interaction`` object.
+            :class:`~lax.Interaction` object.  For energy-dependent interactions
+            the block at ``energy_index`` is extracted automatically.
         source
             Mesh-space driving term, shape ``(N_c·N,)``.
         energy_index
@@ -222,12 +268,12 @@ class _WavefunctionDirectKernel:
         """
         from lax.types import Interaction  # noqa: PLC0415
 
-        if isinstance(potential, Interaction):
-            block = potential.block[energy_index] if potential.energy_dependent else potential.block
-        else:
-            # Raw array: pass as-is.  For energy-dependent arrays the caller must
-            # slice to the desired energy before calling (potential[energy_index]).
-            block = potential
+        if not isinstance(potential, Interaction):
+            raise TypeError(
+                "wavefunction_direct() accepts only Interaction objects. "
+                "Use solver.potential() or solver.interaction_from_block/array/funcs to build one."
+            )
+        block = potential.block[energy_index] if potential.energy_dependent else potential.block
 
         return cast(
             jax.Array,
@@ -249,6 +295,7 @@ def make_rmatrix_direct_kernel(
     channels: tuple[ChannelSpec, ...],
     energies: jax.Array,
     boundary: BoundaryValues | None,
+    mass_factor_grid: jax.Array | None = None,
 ) -> DirectRMatrixKernel:
     """Build a JIT-compiled ``rmatrix_direct(V) → R`` kernel for the compile-time grid.
 
@@ -272,6 +319,10 @@ def make_rmatrix_direct_kernel(
     boundary
         Compile-time boundary values for S-matrix matching, or ``None`` if only
         the R-matrix is needed.
+    mass_factor_grid
+        Optional per-energy (and optionally per-channel) ℏ²/2μ values in MeV·fm²,
+        shape ``(N_E,)`` or ``(N_E, N_c)``.  Applied in the energy-dependent
+        Interaction path only (``energy_dependent=True``).
 
     Returns
     -------
@@ -297,6 +348,7 @@ def make_rmatrix_direct_kernel(
             matrix_size=matrix_size,
             mass_factor=mass_factor,
             boundary=boundary,
+            mass_factor_grid=mass_factor_grid,
         ),
     )
 

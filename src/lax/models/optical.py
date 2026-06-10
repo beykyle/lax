@@ -3,7 +3,7 @@
 These utilities expose the general machinery behind the coupled optical examples in
 the benchmark suite. Users can define their own rotor-coupled models, derive the
 corresponding :class:`lax.types.ChannelSpec` objects, and build local potential
-callbacks for :func:`lax.assemble_local`.
+callbacks for :meth:`~lax.Solver.interaction_from_block`.
 """
 
 from __future__ import annotations
@@ -210,8 +210,7 @@ def make_rotor_coupled_optical_potential(model: RotorCoupledOpticalModel) -> Cou
     Returns
     -------
     CoupledPotential
-        Callback with signature ``(radii, channel_index, coupled_index)`` suitable
-        for :func:`lax.assemble_local`.
+        Callback with signature ``(radii, channel_index, coupled_index)``.
     """
 
     def potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:

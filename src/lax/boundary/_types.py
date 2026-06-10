@@ -767,6 +767,7 @@ class Solver:
     interaction_from_block: Callable | None = None
     interaction_from_array: Callable | None = None
     interaction_from_funcs: Callable | None = None
+    potential: Callable | None = None
     interpolate_rmatrix: InterpolatorBuilder | None = None
     interpolate_smatrix: InterpolatorBuilder | None = None
     interpolate_phases: InterpolatorBuilder | None = None

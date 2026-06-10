@@ -32,7 +32,8 @@ def test_yamaguchi_fourier_matches_direct_integral() -> None:
         solvers=("spectrum", "wavefunction"),
         momenta=jnp.linspace(0.1, 2.0, 20),
     )
-    potential = lm.assemble_nonlocal(solver.mesh, yamaguchi_kernel)
+    assert solver.potential is not None
+    potential = solver.potential(yamaguchi_kernel)
 
     assert solver.spectrum is not None
     assert solver.fourier is not None

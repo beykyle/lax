@@ -18,7 +18,6 @@ import numpy as np
 from lax.boundary import compute_boundary_values
 from lax.boundary._types import (
     BoundaryValues,
-    DirectGridObservable,
     DirectRMatrixKernel,
     DoubleFourierTransform,
     EigenpairAccessor,
@@ -47,15 +46,14 @@ from lax.operators.interaction import (
     make_interaction_from_array,
     make_interaction_from_block,
     make_interaction_from_funcs,
+    make_potential_builder,
 )
 from lax.solvers import (
-    bind_direct_grid_observables,
     bind_grid_observables,
     bind_interpolators,
     bind_observables,
     make_direct_wavefunction_kernel,
     make_phases_direct_observable,
-    make_rmatrix_direct_grid_observable,
     make_rmatrix_direct_kernel,
     make_smatrix_direct_observable,
     make_spectrum_kernel,
@@ -112,15 +110,13 @@ class _ObservableBundle:
     smatrix_grid: SpectrumGridObservable | None
     phases_grid: SpectrumGridObservable | None
     rmatrix_direct: DirectRMatrixKernel | None
-    rmatrix_direct_grid: DirectGridObservable | None
-    smatrix_direct_grid: DirectGridObservable | None
-    phases_direct_grid: DirectGridObservable | None
     smatrix_direct: SMatrixDirectObservable | None
     phases_direct: PhasesDirectObservable | None
     wavefunction_direct: WavefunctionDirectObservable | None
     interaction_from_block: object | None
     interaction_from_array: object | None
     interaction_from_funcs: object | None
+    potential: object | None
     interpolate_rmatrix: InterpolatorBuilder | None
     interpolate_smatrix: InterpolatorBuilder | None
     interpolate_phases: InterpolatorBuilder | None
@@ -160,12 +156,9 @@ def compile(
         automatically whenever the requested solver path needs it.
     solvers
         Runtime entry points to expose on the returned :class:`~lax.Solver`.
-        The potential passed to ``solver.spectrum(V)`` or
-        ``solver.rmatrix_direct(V)`` must have shape ``(N_c, N_c, N)`` for a
-        local potential or ``(N_c, N_c, N, N)`` for a non-local kernel, where
-        ``N = mesh.n`` and ``N_c = len(channels)``.  Use
-        :func:`lax.assemble_local` / :func:`lax.assemble_nonlocal` to build
-        these arrays.
+        The potential passed to ``solver.spectrum(V)`` or ``solver.rmatrix_direct(V)``
+        must be an :class:`~lax.Interaction`.  Build one with ``solver.potential(fn)``
+        or the ``solver.interaction_from_{block,array,funcs}`` builders.
     energies
         Compile-time energy grid used for boundary-value-dependent observables and
         aligned-grid workflows.
@@ -535,9 +528,6 @@ def _bind_solver_observables(
             )
 
     rmatrix_direct_fn: DirectRMatrixKernel | None = None
-    rmatrix_direct_grid_fn: DirectGridObservable | None = None
-    smatrix_direct_grid_fn: DirectGridObservable | None = None
-    phases_direct_grid_fn: DirectGridObservable | None = None
     smatrix_direct_fn: SMatrixDirectObservable | None = None
     phases_direct_fn: PhasesDirectObservable | None = None
     wavefunction_direct_fn: WavefunctionDirectObservable | None = None
@@ -548,6 +538,7 @@ def _bind_solver_observables(
             request.channels,
             energies,
             boundary,
+            mass_factor_grid,
         )
         from lax.solvers.linear_solve import _DirectRMatrixKernel  # noqa: PLC0415
 
@@ -560,19 +551,6 @@ def _bind_solver_observables(
             request.channels,
             energies,
         )
-        if has_energy_grid:
-            rmatrix_direct_grid_fn = make_rmatrix_direct_grid_observable(
-                mesh,
-                operators,
-                request.channels,
-                energies,
-                boundary,
-                mass_factor_grid=mass_factor_grid,
-            )
-            (
-                smatrix_direct_grid_fn,
-                phases_direct_grid_fn,
-            ) = bind_direct_grid_observables(rmatrix_direct_grid_fn, boundary)
 
     interpolate_rmatrix_fn: InterpolatorBuilder | None = None
     interpolate_smatrix_fn: InterpolatorBuilder | None = None
@@ -584,13 +562,10 @@ def _bind_solver_observables(
             interpolate_phases_fn,
         ) = bind_interpolators(energies)
 
-    interaction_from_block_fn = None
-    interaction_from_array_fn = None
-    interaction_from_funcs_fn = None
-    if has_energy_grid:
-        interaction_from_block_fn = make_interaction_from_block(mesh, request.channels, energies)
-        interaction_from_array_fn = make_interaction_from_array(mesh, request.channels, energies)
-        interaction_from_funcs_fn = make_interaction_from_funcs(mesh, request.channels, energies)
+    interaction_from_block_fn = make_interaction_from_block(mesh, request.channels, energies)
+    interaction_from_array_fn = make_interaction_from_array(mesh, request.channels, energies)
+    interaction_from_funcs_fn = make_interaction_from_funcs(mesh, request.channels, energies)
+    potential_fn = make_potential_builder(mesh, request.channels, energies)
 
     return _ObservableBundle(
         spectrum=spectrum_fn,
@@ -604,15 +579,13 @@ def _bind_solver_observables(
         smatrix_grid=smatrix_grid_fn,
         phases_grid=phases_grid_fn,
         rmatrix_direct=rmatrix_direct_fn,
-        rmatrix_direct_grid=rmatrix_direct_grid_fn,
-        smatrix_direct_grid=smatrix_direct_grid_fn,
-        phases_direct_grid=phases_direct_grid_fn,
         smatrix_direct=smatrix_direct_fn,
         phases_direct=phases_direct_fn,
         wavefunction_direct=wavefunction_direct_fn,
         interaction_from_block=interaction_from_block_fn,
         interaction_from_array=interaction_from_array_fn,
         interaction_from_funcs=interaction_from_funcs_fn,
+        potential=potential_fn,
         interpolate_rmatrix=interpolate_rmatrix_fn,
         interpolate_smatrix=interpolate_smatrix_fn,
         interpolate_phases=interpolate_phases_fn,
@@ -657,15 +630,13 @@ def _assemble_solver(
         smatrix_grid=observables.smatrix_grid,
         phases_grid=observables.phases_grid,
         rmatrix_direct=observables.rmatrix_direct,
-        rmatrix_direct_grid=observables.rmatrix_direct_grid,
-        smatrix_direct_grid=observables.smatrix_direct_grid,
-        phases_direct_grid=observables.phases_direct_grid,
         smatrix_direct=observables.smatrix_direct,
         phases_direct=observables.phases_direct,
         wavefunction_direct=observables.wavefunction_direct,
         interaction_from_block=observables.interaction_from_block,
         interaction_from_array=observables.interaction_from_array,
         interaction_from_funcs=observables.interaction_from_funcs,
+        potential=observables.potential,
         interpolate_rmatrix=observables.interpolate_rmatrix,
         interpolate_smatrix=observables.interpolate_smatrix,
         interpolate_phases=observables.interpolate_phases,

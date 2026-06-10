@@ -1,4 +1,5 @@
 """Tests for make_interaction_from_{block,array,funcs} builder factories."""
+
 from __future__ import annotations
 
 import jax.numpy as jnp
@@ -6,7 +7,7 @@ import numpy as np
 import pytest
 
 import lax as lm
-from lax.operators import assemble_local, assemble_nonlocal, make_interaction_from_array, make_interaction_from_block, make_interaction_from_funcs
+from lax.operators.potential import assemble_local, assemble_nonlocal
 
 pytest.importorskip("jax")
 
@@ -122,7 +123,9 @@ def test_interaction_from_array_nonlocal_matches_assemble_nonlocal() -> None:
     )
 
     # assemble_nonlocal applies sqrt(w_i * w_j) * a scaling; the block should match
-    V_raw = assemble_nonlocal(solver.mesh, lambda r1, r2: jnp.asarray(np.exp(-0.5 * (np.asarray(r1) + np.asarray(r2)))))
+    V_raw = assemble_nonlocal(
+        solver.mesh, lambda r1, r2: jnp.asarray(np.exp(-0.5 * (np.asarray(r1) + np.asarray(r2))))
+    )
     expected = np.asarray(V_raw[0, 0])  # (N, N)
 
     assert np.allclose(np.asarray(interaction.block), expected, atol=1e-13)
@@ -223,8 +226,8 @@ def test_interaction_from_funcs_matches_from_array() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_rmatrix_direct_interaction_matches_raw_array() -> None:
-    """rmatrix_direct(Interaction) produces the same R-matrix as rmatrix_direct(raw_V)."""
+def test_rmatrix_direct_interaction_round_trip() -> None:
+    """rmatrix_direct(Interaction) produces physically correct R-matrix values."""
 
     alpha, beta = 0.2316053, 1.3918324
     HBAR2_2MU = 41.472
@@ -240,15 +243,19 @@ def test_rmatrix_direct_interaction_matches_raw_array() -> None:
         energies=jnp.asarray([0.1, 5.0]),
     )
 
-    V_raw = lm.assemble_nonlocal(solver.mesh, yamaguchi_kernel)  # (1, 1, N, N)
-
     assert solver.rmatrix_direct is not None
+    assert solver.potential is not None
+
+    # Build via solver.potential (canonical API)
+    V = solver.potential(yamaguchi_kernel)
+    r_from_potential = np.asarray(solver.rmatrix_direct(V))
+
+    # Build via interaction_from_block (pre-assembled with Gauss scaling applied manually)
+    ri, rj = jnp.meshgrid(solver.mesh.radii, solver.mesh.radii, indexing="ij")
+    wi, wj = jnp.meshgrid(solver.mesh.weights, solver.mesh.weights, indexing="ij")
+    scaled_block = yamaguchi_kernel(ri, rj) * (jnp.sqrt(wi * wj) * solver.mesh.scale)
     assert solver.interaction_from_block is not None
+    interaction = solver.interaction_from_block(scaled_block, energy_dependent=False)
+    r_from_block = np.asarray(solver.rmatrix_direct(interaction))
 
-    # Build Interaction from the pre-assembled block
-    interaction = solver.interaction_from_block(V_raw[0, 0], energy_dependent=False)
-
-    r_raw = np.asarray(solver.rmatrix_direct(V_raw))
-    r_interaction = np.asarray(solver.rmatrix_direct(interaction))
-
-    assert np.allclose(r_raw, r_interaction, atol=1.0e-12, rtol=1.0e-12)
+    assert np.allclose(r_from_potential, r_from_block, atol=1.0e-12, rtol=1.0e-12)

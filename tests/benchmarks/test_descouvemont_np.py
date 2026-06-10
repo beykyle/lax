@@ -31,6 +31,24 @@ def _solver(reference: NpJ1Reference, method: str, solvers: tuple[str, ...]) -> 
     )
 
 
+def _np_interaction(solver: lm.Solver) -> object:
+    """Build the Reid n-p J=1 Interaction from its channel decomposition."""
+
+    A00 = np.array([[1.0, 0.0], [0.0, 0.0]])
+    A01 = np.array([[0.0, 1.0], [1.0, 0.0]])
+    A11 = np.array([[0.0, 0.0], [0.0, 1.0]])
+    r = solver.mesh.radii
+    assert solver.interaction_from_array is not None
+    return solver.interaction_from_array(
+        local=[
+            (reid_np_j1_potential(r, 0, 0), A00),
+            (reid_np_j1_potential(r, 0, 1), A01),
+            (reid_np_j1_potential(r, 1, 1), A11),
+        ],
+        energy_dependent=False,
+    )
+
+
 def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential: jax.Array) -> np.ndarray:
     """Evaluate the collision matrix from the direct R-matrix kernel."""
 
@@ -81,8 +99,8 @@ def _paper_observables_from_direct(
     """Return the published observables from the direct R-matrix path."""
 
     solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
-    potential = lm.assemble_local(solver.mesh, reid_np_j1_potential, n_channels=2)
-    smatrices = _smatrix_from_direct_rmatrix(solver, potential)
+    V = _np_interaction(solver)
+    smatrices = _smatrix_from_direct_rmatrix(solver, V)
     return _paper_observables(smatrices)
 
 
@@ -122,8 +140,8 @@ def test_descouvemont_np_spectral_and_direct_paths_agree() -> None:
     reference = load_np_j1_references()[0]
     spectral_solver = _solver(reference, "eigh", ("spectrum", "smatrix"))
     direct_solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
-    spectral_potential = lm.assemble_local(spectral_solver.mesh, reid_np_j1_potential, n_channels=2)
-    direct_potential = lm.assemble_local(direct_solver.mesh, reid_np_j1_potential, n_channels=2)
+    spectral_potential = _np_interaction(spectral_solver)
+    direct_V = _np_interaction(direct_solver)
 
     assert spectral_solver.spectrum is not None
     assert spectral_solver.smatrix is not None
@@ -131,6 +149,6 @@ def test_descouvemont_np_spectral_and_direct_paths_agree() -> None:
     spectral_smatrices = np.asarray(
         spectral_solver.smatrix(spectral_solver.spectrum(spectral_potential))
     )
-    direct_smatrices = _smatrix_from_direct_rmatrix(direct_solver, direct_potential)
+    direct_smatrices = _smatrix_from_direct_rmatrix(direct_solver, direct_V)
 
     assert np.allclose(spectral_smatrices, direct_smatrices, atol=1.0e-10, rtol=1.0e-10)

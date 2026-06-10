@@ -111,8 +111,8 @@ def test_alpha_pb_optical_matches_published_appendix_a(
     """Published Descouvemont Example 1 collision-matrix values stay visible in the suite."""
 
     solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
-    potential = lm.assemble_local(solver.mesh, lambda r: _optical_potential(r, imag_depth=10.0))
-    smatrix = _smatrix_from_direct_rmatrix(solver, potential)[:, 0, 0]
+    V = solver.potential(lambda r: _optical_potential(r, imag_depth=10.0))
+    smatrix = _smatrix_from_direct_rmatrix(solver, V)[:, 0, 0]
 
     assert np.allclose(smatrix, reference.collision_matrix, atol=1.0e-4, rtol=1.0e-4)
 
@@ -123,7 +123,7 @@ def test_alpha_pb_optical_eig_matches_appendix_a() -> None:
 
     reference = ALPHA_PB_REFERENCE_A14_N60_NS1
     solver = _complex_solver(reference, "eig", ("spectrum", "smatrix"))
-    potential = lm.assemble_local(solver.mesh, lambda r: _optical_potential(r, imag_depth=10.0))
+    potential = solver.potential(lambda r: _optical_potential(r, imag_depth=10.0))
 
     assert solver.spectrum is not None
     assert solver.smatrix is not None
@@ -139,8 +139,8 @@ def test_alpha_pb_optical_direct_matches_appendix_a() -> None:
 
     reference = ALPHA_PB_REFERENCE_A14_N60_NS1
     solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
-    potential = lm.assemble_local(solver.mesh, lambda r: _optical_potential(r, imag_depth=10.0))
-    smatrix = _smatrix_from_direct_rmatrix(solver, potential)[:, 0, 0]
+    V = solver.potential(lambda r: _optical_potential(r, imag_depth=10.0))
+    smatrix = _smatrix_from_direct_rmatrix(solver, V)[:, 0, 0]
 
     assert np.allclose(smatrix, reference.collision_matrix, atol=1.0e-4, rtol=1.0e-4)
 
@@ -154,13 +154,15 @@ def test_alpha_pb_optical_method_paths_agree() -> None:
     real_direct_solver = _real_solver(reference, "linear_solve", ("rmatrix_direct",))
     complex_solver = _complex_solver(reference, "eig", ("spectrum", "smatrix"))
     complex_direct_solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
-    real_potential = lm.assemble_local(
-        real_spectrum_solver.mesh,
-        lambda r: jnp.real(_optical_potential(r, imag_depth=0.0)),
+    real_V_spectral = real_spectrum_solver.potential(
+        lambda r: jnp.real(_optical_potential(r, imag_depth=0.0))
     )
-    complex_potential = lm.assemble_local(
-        complex_solver.mesh,
-        lambda r: _optical_potential(r, imag_depth=10.0),
+    real_V_direct = real_direct_solver.potential(
+        lambda r: jnp.real(_optical_potential(r, imag_depth=0.0))
+    )
+    complex_V_spectral = complex_solver.potential(lambda r: _optical_potential(r, imag_depth=10.0))
+    complex_V_direct = complex_direct_solver.potential(
+        lambda r: _optical_potential(r, imag_depth=10.0)
     )
 
     assert real_spectrum_solver.spectrum is not None
@@ -169,11 +171,13 @@ def test_alpha_pb_optical_method_paths_agree() -> None:
     assert complex_solver.smatrix is not None
 
     real_smatrix = np.asarray(
-        real_spectrum_solver.smatrix(real_spectrum_solver.spectrum(real_potential))
+        real_spectrum_solver.smatrix(real_spectrum_solver.spectrum(real_V_spectral))
     )
-    real_direct = _smatrix_from_direct_rmatrix(real_direct_solver, real_potential)
-    complex_smatrix = np.asarray(complex_solver.smatrix(complex_solver.spectrum(complex_potential)))
-    complex_direct = _smatrix_from_direct_rmatrix(complex_direct_solver, complex_potential)
+    real_direct = _smatrix_from_direct_rmatrix(real_direct_solver, real_V_direct)
+    complex_smatrix = np.asarray(
+        complex_solver.smatrix(complex_solver.spectrum(complex_V_spectral))
+    )
+    complex_direct = _smatrix_from_direct_rmatrix(complex_direct_solver, complex_V_direct)
 
     assert np.allclose(real_smatrix, real_direct, atol=1.0e-10, rtol=1.0e-10)
     assert np.allclose(complex_smatrix, complex_direct, atol=1.0e-10, rtol=1.0e-10)

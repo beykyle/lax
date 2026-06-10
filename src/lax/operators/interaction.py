@@ -1,6 +1,8 @@
 """Factories for building Interaction blocks from potential terms."""
+
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 
 import jax
@@ -30,9 +32,7 @@ class _InteractionFromBlock:
         M = self.N_c * self.N
         expected_shape = (self.N_E, M, M) if energy_dependent else (M, M)
         if block.shape != expected_shape:
-            raise ValueError(
-                f"Expected block shape {expected_shape}, got {block.shape}."
-            )
+            raise ValueError(f"Expected block shape {expected_shape}, got {block.shape}.")
         return Interaction(block=block, energy_dependent=energy_dependent)
 
 
@@ -48,8 +48,7 @@ class _InteractionFromArray:
     def _validate_A(self, A: jax.Array, label: str) -> None:
         if A.shape != (self.N_c, self.N_c):
             raise ValueError(
-                f"{label}: coupling matrix A must be ({self.N_c},{self.N_c}), "
-                f"got {A.shape}."
+                f"{label}: coupling matrix A must be ({self.N_c},{self.N_c}), got {A.shape}."
             )
         if not jnp.allclose(A, A.T, atol=1e-12):
             raise ValueError(f"{label}: coupling matrix A must be symmetric.")
@@ -103,7 +102,7 @@ class _InteractionFromArray:
                         col_start = cp * N
                         diag_blocks = jax.vmap(jnp.diag)(A[c, cp] * g)  # (N_E, N, N)
                         block = block.at[
-                            :, row_start:row_start + N, col_start:col_start + N
+                            :, row_start : row_start + N, col_start : col_start + N
                         ].add(diag_blocks)
             else:
                 if g.ndim != 1 or g.shape != (N,):
@@ -117,9 +116,9 @@ class _InteractionFromArray:
                             continue
                         row_start = c * N
                         col_start = cp * N
-                        block = block.at[
-                            row_start:row_start + N, col_start:col_start + N
-                        ].add(jnp.diag(A[c, cp] * g))
+                        block = block.at[row_start : row_start + N, col_start : col_start + N].add(
+                            jnp.diag(A[c, cp] * g)
+                        )
 
         for term_idx, (g, A) in enumerate(nonlocal_):
             g = jnp.asarray(g)
@@ -139,7 +138,7 @@ class _InteractionFromArray:
                         row_start = c * N
                         col_start = cp * N
                         block = block.at[
-                            :, row_start:row_start + N, col_start:col_start + N
+                            :, row_start : row_start + N, col_start : col_start + N
                         ].add(A[c, cp] * scaled)
             else:
                 if g.ndim != 2 or g.shape != (N, N):
@@ -154,9 +153,9 @@ class _InteractionFromArray:
                             continue
                         row_start = c * N
                         col_start = cp * N
-                        block = block.at[
-                            row_start:row_start + N, col_start:col_start + N
-                        ].add(A[c, cp] * scaled)
+                        block = block.at[row_start : row_start + N, col_start : col_start + N].add(
+                            A[c, cp] * scaled
+                        )
 
         first_block = block[0] if energy_dependent else block
         if not jnp.allclose(first_block, first_block.T, atol=1e-10):
@@ -171,8 +170,8 @@ class _InteractionFromFuncs:
 
     N: int
     N_E: int
-    radii: jax.Array        # (N,)
-    energies: jax.Array     # (N_E,)
+    radii: jax.Array  # (N,)
+    energies: jax.Array  # (N_E,)
     array_builder: _InteractionFromArray
 
     def __call__(
@@ -268,8 +267,96 @@ def make_interaction_from_funcs(
     )
 
 
+@dataclass(frozen=True)
+class _PotentialBuilder:
+    """Pickle-safe ``solver.potential(fn, coupling, energy_dependent)`` callable.
+
+    Wraps ``_InteractionFromFuncs`` with arity-based local/nonlocal dispatch and
+    a sensible ``coupling`` default for single-channel problems.
+    """
+
+    n_c: int
+    funcs_builder: _InteractionFromFuncs
+
+    def __call__(
+        self,
+        fn: object,
+        *,
+        coupling: np.ndarray | None = None,
+        energy_dependent: bool = False,
+    ) -> Interaction:
+        """Build an :class:`~lax.Interaction` from a potential function.
+
+        Parameters
+        ----------
+        fn
+            Potential function.  Arity determines local vs nonlocal:
+
+            * ``energy_dependent=False``: ``fn(r)`` → local, ``fn(r, r')`` → nonlocal
+            * ``energy_dependent=True``:  ``fn(r, E)`` → local, ``fn(r, r', E)`` → nonlocal
+
+        coupling
+            ``(N_c, N_c)`` symmetric coupling matrix.  Defaults to ``[[1.0]]``
+            when ``N_c == 1``.  Required for multi-channel solvers.
+        energy_dependent
+            Whether ``fn`` takes an energy argument and the result should carry
+            a leading ``(N_E,)`` axis.
+        """
+        if coupling is None:
+            if self.n_c != 1:
+                raise ValueError(
+                    f"coupling is required for {self.n_c}-channel solvers; "
+                    "pass coupling=np.array([[...]])."
+                )
+            coupling = np.ones((1, 1), dtype=np.float64)
+
+        if energy_dependent and self.funcs_builder.N_E == 0:
+            raise ValueError(
+                "energy_dependent=True requires an energy grid; "
+                "re-compile with energies=... to use energy-dependent potentials."
+            )
+
+        n_args = len(inspect.signature(fn).parameters)  # type: ignore[arg-type]
+        if energy_dependent:
+            if n_args == 2:
+                return self.funcs_builder(local=[(fn, coupling)], energy_dependent=True)  # type: ignore[list-item]
+            elif n_args == 3:
+                return self.funcs_builder(nonlocal_=[(fn, coupling)], energy_dependent=True)  # type: ignore[list-item]
+            else:
+                raise ValueError(
+                    f"For energy_dependent=True, fn must take 2 args fn(r, E) "
+                    f"(local) or 3 args fn(r, r', E) (nonlocal); got {n_args}."
+                )
+        else:
+            if n_args == 1:
+                return self.funcs_builder(local=[(fn, coupling)], energy_dependent=False)  # type: ignore[list-item]
+            elif n_args == 2:
+                return self.funcs_builder(nonlocal_=[(fn, coupling)], energy_dependent=False)  # type: ignore[list-item]
+            else:
+                raise ValueError(
+                    f"fn must take 1 arg fn(r) (local) or 2 args fn(r, r') "
+                    f"(nonlocal); got {n_args}."
+                )
+
+
+def make_potential_builder(
+    mesh: Mesh,
+    channels: tuple[ChannelSpec, ...],
+    energies: jax.Array,
+) -> _PotentialBuilder:
+    """Return ``solver.potential`` — a simple callable that builds an Interaction from a function.
+
+    The returned callable auto-detects local vs nonlocal from function arity and
+    defaults ``coupling`` to ``[[1.0]]`` for single-channel problems.  See
+    :class:`_PotentialBuilder` for the full signature.
+    """
+    funcs_builder = make_interaction_from_funcs(mesh, channels, energies)
+    return _PotentialBuilder(n_c=len(channels), funcs_builder=funcs_builder)
+
+
 __all__ = [
     "make_interaction_from_array",
     "make_interaction_from_block",
     "make_interaction_from_funcs",
+    "make_potential_builder",
 ]

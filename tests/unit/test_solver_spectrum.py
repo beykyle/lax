@@ -8,6 +8,7 @@ import lax as lm
 from lax.boundary import BoundaryValues
 from lax.boundary._types import OperatorMatrices
 from lax.meshes.legendre import build_legendre_x
+from lax.operators import make_interaction_from_array
 from lax.solvers import (
     assemble_block_hamiltonian,
     bind_observables,
@@ -220,8 +221,17 @@ def test_coupled_channel_rmatrix_matches_direct_solver() -> None:
             k=jnp.asarray([[1.0, 1.0]]),
         ),
     )
+    array_builder = make_interaction_from_array(mesh, channels, jnp.asarray([0.25]))
+    interaction = array_builder(
+        local=[
+            (potential[0, 0], np.array([[1.0, 0.0], [0.0, 0.0]])),
+            (potential[0, 1], np.array([[0.0, 1.0], [1.0, 0.0]])),
+            (potential[1, 1], np.array([[0.0, 0.0], [0.0, 1.0]])),
+        ],
+        energy_dependent=False,
+    )
     direct = make_rmatrix_direct_kernel(mesh, operators, channels, jnp.asarray([0.25]), None)(
-        potential
+        interaction
     )
 
     assert smatrix is not None
