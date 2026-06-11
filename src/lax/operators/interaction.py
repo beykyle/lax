@@ -106,7 +106,11 @@ class _InteractionFromBlock:
 
         M = self.N_c * self.N
         leading = _leading_axes(
-            self.N_b, self.N_E, energy_dependent, block_dependent, "interaction_from_block"
+            self.N_b,
+            self.N_E,
+            energy_dependent,
+            block_dependent,
+            "interaction_from_block",
         )
         expected_shape = (*leading, M, M)
         if block.shape != expected_shape:
@@ -161,7 +165,11 @@ class _InteractionFromArray:
         N = self.N
         M = self.N_c * N
         leading = _leading_axes(
-            self.N_b, self.N_E, energy_dependent, block_dependent, "interaction_from_array"
+            self.N_b,
+            self.N_E,
+            energy_dependent,
+            block_dependent,
+            "interaction_from_array",
         )
         flags = f"block_dependent={block_dependent}, energy_dependent={energy_dependent}"
 

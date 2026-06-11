@@ -85,7 +85,11 @@ def test_identical_channels_share_slices_across_blocks() -> None:
     energies = np.linspace(1.0, 20.0, 4)
     shared = ChannelSpec(l=1, threshold=0.0, mass_factor=HBAR2_2MU)
     # Two blocks with the same ℓ (e.g. j = ℓ ± ½) must produce identical slices.
-    block_groups = ((shared,), (shared,), (ChannelSpec(l=2, threshold=0.0, mass_factor=HBAR2_2MU),))
+    block_groups = (
+        (shared,),
+        (shared,),
+        (ChannelSpec(l=2, threshold=0.0, mass_factor=HBAR2_2MU),),
+    )
     stacked = compute_boundary_values_blocks(block_groups, energies, channel_radius=RADIUS)
     for field in FIELDS:
         values = np.asarray(getattr(stacked, field))

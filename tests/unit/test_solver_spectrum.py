@@ -99,7 +99,8 @@ def test_make_spectrum_kernel_matches_direct_eigh() -> None:
 
     assert np.allclose(np.asarray(spectrum.eigenvalues), expected_eigenvalues)
     assert np.allclose(
-        np.abs(np.asarray(spectrum.surface_amplitudes)), np.abs(expected_surface_amplitudes)
+        np.abs(np.asarray(spectrum.surface_amplitudes)),
+        np.abs(expected_surface_amplitudes),
     )
     assert spectrum.eigenvectors is not None
 

@@ -67,7 +67,9 @@ def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
     )
 
 
-def _paper_observables(smatrices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _paper_observables(
+    smatrices: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the quantities printed in Descouvemont Appendix B."""
 
     phase_11 = []

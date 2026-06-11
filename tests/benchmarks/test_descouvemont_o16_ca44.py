@@ -87,7 +87,9 @@ def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
     load_o16_ca44_references(),
     ids=["a12-n25-ns4", "a13-n25-ns4", "a14-n25-ns4", "a14-n50-ns2"],
 )
-def test_descouvemont_o16_ca44_matches_published_output(reference: CoupledColumnReference) -> None:
+def test_descouvemont_o16_ca44_matches_published_output(
+    reference: CoupledColumnReference,
+) -> None:
     """Published Descouvemont Example 3 values remain visible in the suite."""
 
     solver = _solver(reference, "linear_solve", ("rmatrix_direct",))

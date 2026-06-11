@@ -162,7 +162,9 @@ def test_from_funcs_bare_block_dependent_term_single_channel(mesh_and_channels) 
     np.testing.assert_array_equal(np.asarray(bare.block), np.asarray(explicit.block))
 
 
-def test_from_funcs_rejects_single_callable_when_block_dependent(mesh_and_channels) -> None:
+def test_from_funcs_rejects_single_callable_when_block_dependent(
+    mesh_and_channels,
+) -> None:
     mesh, channels, energies = mesh_and_channels
     funcs_builder = make_interaction_from_funcs(mesh, channels, energies, n_blocks=N_B)
     with pytest.raises(TypeError, match="sequence of 2 callables"):

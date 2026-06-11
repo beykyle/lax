@@ -169,7 +169,9 @@ def _build_legendre_x_propagated(
         propagation=propagation,
     )
     operators_out = OperatorMatrices(
-        inv_r=_diagonal_operator(1.0 / np.asarray(radii)) if {"1/r", "inv_r"} & operators else None,
+        inv_r=(
+            _diagonal_operator(1.0 / np.asarray(radii)) if {"1/r", "inv_r"} & operators else None
+        ),
         inv_r2=_diagonal_operator(1.0 / (np.asarray(radii) ** 2)),
     )
     return mesh, operators_out

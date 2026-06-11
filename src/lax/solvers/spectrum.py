@@ -19,7 +19,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from lax.spectral.types import Spectrum
-from lax.types import ChannelSpec, Interaction, Mesh, Method, OperatorMatrices, SpectrumKernel
+from lax.types import (
+    ChannelSpec,
+    Interaction,
+    Mesh,
+    Method,
+    OperatorMatrices,
+    SpectrumKernel,
+)
 
 from .assembly import (
     assemble_hamiltonian_arrays,
@@ -69,9 +76,15 @@ class _SpectrumKernel:
         if not self.block_mode:
             reject_block_dependent(potential, "spectrum()")
         if self.method == "eigh":
-            blocks_jit, grid_jit = _SPECTRUM_EIGH_BLOCKS_JIT, _SPECTRUM_EIGH_BLOCKS_GRID_JIT
+            blocks_jit, grid_jit = (
+                _SPECTRUM_EIGH_BLOCKS_JIT,
+                _SPECTRUM_EIGH_BLOCKS_GRID_JIT,
+            )
         elif self.method == "eig":
-            blocks_jit, grid_jit = _SPECTRUM_EIG_BLOCKS_JIT, _SPECTRUM_EIG_BLOCKS_GRID_JIT
+            blocks_jit, grid_jit = (
+                _SPECTRUM_EIG_BLOCKS_JIT,
+                _SPECTRUM_EIG_BLOCKS_GRID_JIT,
+            )
         else:
             msg = f"Method {self.method!r} is not implemented in the MVP spectrum kernel."
             raise ValueError(msg)

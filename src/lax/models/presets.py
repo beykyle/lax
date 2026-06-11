@@ -46,9 +46,24 @@ O16_CA44_ROTOR_MODEL: Final[RotorCoupledOpticalModel] = RotorCoupledOpticalModel
     target_charge=20,
     channels=(
         RotorChannel(orbital_angular_momentum=30, target_spin=0, threshold=0.0, label="0+, L=30"),
-        RotorChannel(orbital_angular_momentum=28, target_spin=2, threshold=1.156, label="2+, L=28"),
-        RotorChannel(orbital_angular_momentum=30, target_spin=2, threshold=1.156, label="2+, L=30"),
-        RotorChannel(orbital_angular_momentum=32, target_spin=2, threshold=1.156, label="2+, L=32"),
+        RotorChannel(
+            orbital_angular_momentum=28,
+            target_spin=2,
+            threshold=1.156,
+            label="2+, L=28",
+        ),
+        RotorChannel(
+            orbital_angular_momentum=30,
+            target_spin=2,
+            threshold=1.156,
+            label="2+, L=30",
+        ),
+        RotorChannel(
+            orbital_angular_momentum=32,
+            target_spin=2,
+            threshold=1.156,
+            label="2+, L=32",
+        ),
     ),
 )
 

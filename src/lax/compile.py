@@ -386,7 +386,10 @@ def _resolve_compile_request(
     # "wavefunction" is served by the spectral path under eigh/eig, but by the
     # direct wavefunction_direct kernel under linear_solve (§14, Example 16.8).
     wants_wavefunction = "wavefunction" in solvers_set
-    wavefunction_via_spectrum = wants_wavefunction and selected_method in {"eigh", "eig"}
+    wavefunction_via_spectrum = wants_wavefunction and selected_method in {
+        "eigh",
+        "eig",
+    }
     wavefunction_via_direct = wants_wavefunction and selected_method == "linear_solve"
 
     needs_spectrum = (

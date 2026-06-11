@@ -97,7 +97,10 @@ def test_energy_dependent_smatrix_grid_matches_manual_flow() -> None:
     bound_phases = solver.phases_grid(spectra)
 
     assert np.allclose(
-        np.asarray(bound_smatrix), np.asarray(manual_smatrix), atol=1.0e-10, rtol=1.0e-10
+        np.asarray(bound_smatrix),
+        np.asarray(manual_smatrix),
+        atol=1.0e-10,
+        rtol=1.0e-10,
     )
     assert np.allclose(
         np.asarray(bound_phases),
@@ -130,7 +133,10 @@ def test_energy_dependent_fixed_spectrum_semantics_are_unchanged() -> None:
     aligned_grid = solver.smatrix_grid(spectra)
 
     assert np.allclose(
-        np.asarray(fixed_grid), np.asarray(manual_fixed_grid), atol=1.0e-10, rtol=1.0e-10
+        np.asarray(fixed_grid),
+        np.asarray(manual_fixed_grid),
+        atol=1.0e-10,
+        rtol=1.0e-10,
     )
     assert not np.allclose(np.asarray(fixed_grid), np.asarray(aligned_grid))
 
@@ -177,7 +183,10 @@ def test_energy_dependent_pade_flow_matches_dense_grid() -> None:
 
     assert np.allclose(np.asarray(interpolated), np.asarray(dense_s), atol=1.0e-4, rtol=1.0e-4)
     assert np.allclose(
-        np.asarray(recovered_phase_knots), np.asarray(sparse_phases), atol=1.0e-10, rtol=1.0e-10
+        np.asarray(recovered_phase_knots),
+        np.asarray(sparse_phases),
+        atol=1.0e-10,
+        rtol=1.0e-10,
     )
 
 
