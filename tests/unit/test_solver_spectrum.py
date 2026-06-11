@@ -138,6 +138,7 @@ def test_bind_observables_matches_direct_spectral_helpers() -> None:
         H_plus_p=jnp.asarray([[0.25 + 0.15j]]),
         H_minus_p=jnp.asarray([[0.25 - 0.15j]]),
         is_open=jnp.asarray([[True]]),
+        k=jnp.ones((1, 1)),
     )
     spectrum = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)(potential)
 

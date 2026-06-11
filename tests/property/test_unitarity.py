@@ -77,6 +77,7 @@ def test_smatrix_agrees_with_per_energy_rmatrix_path(V: jax.Array) -> None:
             H_plus_p=_SOLVER.boundary.H_plus_p[i],
             H_minus_p=_SOLVER.boundary.H_minus_p[i],
             is_open=_SOLVER.boundary.is_open[i],
+            k=_SOLVER.boundary.k[i],
         )
         S_from_R = np.asarray(smatrix_from_R(R, boundary_slice))
         assert np.allclose(S_from_R, S_grid[i], atol=1e-10), (

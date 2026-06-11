@@ -81,11 +81,7 @@ def build_laguerre_x(
         T=_to_jax_array(kinetic) if include_kinetic else None,
         TpL=_to_jax_array(kinetic) if include_kinetic else None,
         inv_r=_diagonal_operator(1.0 / radii) if {"1/r", "inv_r"} & operators else None,
-        inv_r2=(
-            _diagonal_operator(1.0 / (radii**2))
-            if {"1/r^2", "1/r²", "inv_r2"} & operators
-            else None
-        ),
+        inv_r2=_diagonal_operator(1.0 / (radii**2)),
     )
     return mesh, operators_out
 
@@ -155,11 +151,7 @@ def build_laguerre_modified_x2(
         T=_to_jax_array(kinetic) if include_kinetic else None,
         TpL=_to_jax_array(kinetic) if include_kinetic else None,
         inv_r=_diagonal_operator(1.0 / radii) if {"1/r", "inv_r"} & operators else None,
-        inv_r2=(
-            _diagonal_operator(1.0 / (radii**2))
-            if {"1/r^2", "1/r²", "inv_r2"} & operators
-            else None
-        ),
+        inv_r2=_diagonal_operator(1.0 / (radii**2)),
     )
     return mesh, operators_out
 

@@ -2,14 +2,13 @@
 
 These utilities expose the general machinery behind the coupled optical examples in
 the benchmark suite. Users can define their own rotor-coupled models, derive the
-corresponding :class:`lax.types.ChannelSpec` objects, and build local potential
-callbacks for :meth:`~lax.Solver.interaction_from_block`.
+corresponding :class:`lax.types.ChannelSpec` objects, and build interactions via
+:func:`interaction_from_rotor_model`.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import jax
@@ -17,9 +16,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from lax._angular import wigner_3j, wigner_6j
-from lax.types import ChannelSpec
-
-type CoupledPotential = Callable[[jax.Array, int, int], jax.Array]
+from lax.boundary._types import Solver
+from lax.types import ChannelSpec, Interaction
 
 
 @dataclass(frozen=True)
@@ -199,29 +197,71 @@ def rotor_coupled_optical_potential(
     return result
 
 
-def make_rotor_coupled_optical_potential(model: RotorCoupledOpticalModel) -> CoupledPotential:
-    """Bind a rotor model into a local-potential callback.
+def interaction_from_rotor_model(
+    model: RotorCoupledOpticalModel,
+    solver: Solver,
+) -> Interaction:
+    """Build an :class:`~lax.Interaction` for a rotor-coupled optical model.
+
+    Decomposes the potential into three local terms via the §6.1 term-decomposition
+    pattern and assembles them through :meth:`~lax.Solver.interaction_from_funcs`:
+
+    * Nuclear diagonal: ``-complex_depth · WS(r)`` on the diagonal channels.
+    * Coulomb diagonal: ``Coulomb(r)`` on the diagonal channels.
+    * Derivative coupling: ``-complex_depth · β · R_c · dWS/dr`` scaled by the
+      angular coupling matrix ``A[c, c'] = rotor_coupling_coefficient(c, c')``.
 
     Parameters
     ----------
     model
         Rotor-coupled optical model definition.
+    solver
+        Compiled solver whose :meth:`~lax.Solver.interaction_from_funcs` entry
+        point is used to assemble the potential block.
 
     Returns
     -------
-    CoupledPotential
-        Callback with signature ``(radii, channel_index, coupled_index)``.
+    Interaction
+        Energy-independent assembled potential block ready for ``solver.spectrum``
+        or ``solver.rmatrix_direct``.
     """
 
-    def potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:
-        return rotor_coupled_optical_potential(
-            model,
-            radii,
-            channel_index,
-            coupled_index,
+    n_c = len(model.channels)
+    complex_depth = complex(model.real_depth + 1j * model.imaginary_depth)
+    R = model.potential_radius
+    a = model.diffuseness
+    coupling_matrix = np.array(
+        [[rotor_coupling_coefficient(model, c, cp) for cp in range(n_c)] for c in range(n_c)],
+        dtype=np.float64,
+    )
+
+    def _nuclear(r: jax.Array) -> jax.Array:
+        return jnp.asarray(-complex_depth * woods_saxon_form_factor(r, R, a))
+
+    def _coulomb(r: jax.Array) -> jax.Array:
+        return uniform_sphere_coulomb_potential(
+            r,
+            model.coulomb_radius,
+            model.projectile_charge,
+            model.target_charge,
         )
 
-    return potential
+    def _coupling(r: jax.Array) -> jax.Array:
+        return jnp.asarray(
+            -complex_depth
+            * model.deformation
+            * model.coupling_radius
+            * woods_saxon_derivative(r, R, a)
+        )
+
+    assert solver.interaction_from_funcs is not None
+    return solver.interaction_from_funcs(
+        local=[
+            (_nuclear, np.eye(n_c)),
+            (_coulomb, np.eye(n_c)),
+            (_coupling, coupling_matrix),
+        ],
+    )
 
 
 def woods_saxon_form_factor(radii: jax.Array, radius: float, diffuseness: float) -> jax.Array:
@@ -392,12 +432,11 @@ def first_column_amplitudes_and_phases(
 
 
 __all__ = [
-    "CoupledPotential",
     "RotorChannel",
     "RotorCoupledOpticalModel",
     "channels_from_rotor_model",
     "first_column_amplitudes_and_phases",
-    "make_rotor_coupled_optical_potential",
+    "interaction_from_rotor_model",
     "open_channel_count",
     "rotor_coupled_optical_potential",
     "rotor_coupling_coefficient",

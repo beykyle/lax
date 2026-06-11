@@ -198,8 +198,7 @@ def compile(
 
         1. **Boundary values** — wave numbers and Sommerfeld parameters at each
            ``(energy, channel)`` pair use ``mass_factor_grid[ie, ic]``.
-        2. **Aligned-grid observables** — ``rmatrix_direct_grid`` (and its
-           derived ``smatrix``/``phases`` variants) assemble the Hamiltonian
+        2. **Aligned-grid direct observables** — the Hamiltonian is assembled
            with the per-energy per-channel mass factor at each grid point.
 
     Returns
@@ -253,7 +252,7 @@ def compile(
         momenta=momenta,
     )
     mass_factor_grid_jax = (
-        _to_jax_array(mass_factor_grid_np) if mass_factor_grid_np is not None else None
+        jnp.asarray(mass_factor_grid_np) if mass_factor_grid_np is not None else None
     )
     observables = _bind_solver_observables(
         request=request,
@@ -389,7 +388,7 @@ def _prepare_boundary_data(
         # The solver always stores an energy array so downstream code can rely on a
         # uniform bundle shape even when no boundary-valued observables are exposed.
         empty_energies = np.zeros((0,), dtype=np.float64)
-        return None, _to_jax_array(empty_energies)
+        return None, jnp.asarray(empty_energies)
 
     energies_np = np.asarray(energies)
     boundary = compute_boundary_values(
@@ -400,7 +399,7 @@ def _prepare_boundary_data(
         dps=dps,
         mass_factor_grid=mass_factor_grid,
     )
-    return boundary, _to_jax_array(energies_np)
+    return boundary, jnp.asarray(energies_np)
 
 
 def _prepare_transforms(
@@ -420,7 +419,7 @@ def _prepare_transforms(
     double_fourier_transform_fn: DoubleFourierTransform | None = None
 
     if grid is not None:
-        grid_array = _to_jax_array(np.asarray(grid))
+        grid_array = jnp.asarray(np.asarray(grid))
         basis_grid = compute_B_grid(mesh, grid_array)
         transforms = TransformMatrices(
             B_grid=basis_grid,
@@ -435,7 +434,7 @@ def _prepare_transforms(
         ) = make_to_grid(mesh, basis_grid, grid_array)
 
     if momenta is not None:
-        momenta_array = _to_jax_array(np.asarray(momenta))
+        momenta_array = jnp.asarray(np.asarray(momenta))
         unique_angular_momenta = sorted({channel.l for channel in channels})
         matrices_by_l = {
             angular_momentum: compute_F_momentum(mesh, momenta_array, angular_momentum)
@@ -650,13 +649,6 @@ def _assemble_solver(
         double_fourier_transform=transforms.double_fourier_transform,
         integrate=transforms.integrate,
     )
-
-
-def _to_jax_array(values: np.ndarray) -> jax.Array:
-    """Convert compile-time NumPy data to an explicitly typed JAX array."""
-
-    array: jax.Array = jnp.asarray(values)
-    return array
 
 
 def _broadcast_mass_factor_grid(

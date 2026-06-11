@@ -16,11 +16,6 @@ type Regularization = Literal[
 ]
 type Method = Literal["eigh", "eig", "linear_solve"]
 
-# Backward-compatible aliases for internal signatures and existing sketches.
-type MeshFamilyT = MeshFamily
-type RegularizationT = Regularization
-type MethodT = Method
-
 
 def _empty_extras() -> dict[str, object]:
     """Return a typed empty mapping for mesh-specific extra options."""
@@ -83,7 +78,7 @@ class ChannelSpec:
 
     l: int
     threshold: float
-    mass_factor: float
+    mass_factor: float | jax.Array
 
 
 @jax.tree_util.register_dataclass
@@ -129,10 +124,7 @@ __all__ = [
     "ChannelSpec",
     "Interaction",
     "MeshFamily",
-    "MeshFamilyT",
     "MeshSpec",
     "Method",
-    "MethodT",
     "Regularization",
-    "RegularizationT",
 ]

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 import jax
 import jax.numpy as jnp
 
@@ -16,7 +14,6 @@ def assemble_block_hamiltonian(
     operators: OperatorMatrices,
     channels: tuple[ChannelSpec, ...],
     potential: jax.Array,
-    mass_factor_override: float | jax.Array | None = None,
 ) -> jax.Array:
     """Assemble the Bloch-augmented block Hamiltonian in MeV units.
 
@@ -37,15 +34,12 @@ def assemble_block_hamiltonian(
         Precomputed operator matrices; ``TpL`` must be present.
     channels
         Channel definitions (``l``, ``threshold``, ``mass_factor``).
+        For energy-dependent μ, pass channels whose ``mass_factor`` fields
+        carry the per-energy values (e.g. a vmapped slice of
+        ``mass_factor_grid``).
     potential
         Assembled potential in MeV.  Shape ``(N_c, N_c, N)`` for local
         or ``(N_c, N_c, N, N)`` for non-local.
-    mass_factor_override
-        When not ``None``, overrides ``channel.mass_factor`` for the
-        kinetic scaling.  Accepts either a scalar (uniform override for
-        all channels) or a JAX array of shape ``(N_c,)`` for per-channel
-        values.  Supply a traced scalar when using an energy-dependent
-        μ(E) so it vmaps correctly.
 
     Returns
     -------
@@ -56,20 +50,12 @@ def assemble_block_hamiltonian(
     channel_count = len(channels)
     basis_size = mesh.n
     t_plus_l = _require_operator(operators.TpL, "TpL")
-    inv_r2 = operators.inv_r2
-    if inv_r2 is None:
-        inv_r2 = _diagonal_from_vector(1.0 / (mesh.radii**2))
+    inv_r2 = _require_operator(operators.inv_r2, "inv_r2")
 
     blocks: list[jax.Array] = []
     for channel_index in range(channel_count):
         row_blocks: list[jax.Array] = []
-        if mass_factor_override is not None:
-            if jnp.ndim(mass_factor_override) == 0:
-                m_c = mass_factor_override
-            else:
-                m_c = cast(jax.Array, mass_factor_override)[channel_index]
-        else:
-            m_c = channels[channel_index].mass_factor
+        m_c = channels[channel_index].mass_factor
         angular_momentum = channels[channel_index].l
         threshold = channels[channel_index].threshold
         for coupled_index in range(channel_count):

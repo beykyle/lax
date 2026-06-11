@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -10,7 +9,7 @@ from lax.models import (
     ALPHA_C12_ROTOR_MODEL,
     channels_from_rotor_model,
     first_column_amplitudes_and_phases,
-    make_rotor_coupled_optical_potential,
+    interaction_from_rotor_model,
     open_channel_count,
 )
 from tests.benchmarks._descouvemont_fixtures import (
@@ -43,19 +42,6 @@ def _solver(reference: CoupledColumnReference, method: str, solvers: tuple[str, 
     )
 
 
-def _rotor_interaction(solver: lm.Solver, fn) -> object:
-    """Build an Interaction for the 8-channel α+12C rotor model from fn(r, c, cp)."""
-    n_c = len(channels_from_rotor_model(ALPHA_C12_ROTOR_MODEL))
-    N = solver.mesh.n
-    M = n_c * N
-    r = solver.mesh.radii
-    block = jnp.zeros((M, M), dtype=jnp.complex128)
-    for c in range(n_c):
-        for cp in range(n_c):
-            g = fn(r, c, cp)
-            block = block.at[c * N : (c + 1) * N, cp * N : (cp + 1) * N].set(jnp.diag(g))
-    assert solver.interaction_from_block is not None
-    return solver.interaction_from_block(block, energy_dependent=False)
 
 
 def _smatrix_from_direct_rmatrix(
@@ -84,14 +70,13 @@ def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
     """Return the boundary-value slice for one compile-time energy."""
 
     assert solver.boundary is not None
-    k_values = None if solver.boundary.k is None else solver.boundary.k[energy_index]
     return BoundaryValues(
         H_plus=solver.boundary.H_plus[energy_index],
         H_minus=solver.boundary.H_minus[energy_index],
         H_plus_p=solver.boundary.H_plus_p[energy_index],
         H_minus_p=solver.boundary.H_minus_p[energy_index],
         is_open=solver.boundary.is_open[energy_index],
-        k=k_values,
+        k=solver.boundary.k[energy_index],
     )
 
 
@@ -106,9 +91,8 @@ def test_descouvemont_closed_channel_matches_published_first_column(
 ) -> None:
     """Published Descouvemont Example 4 values remain visible in the suite."""
 
-    potential = make_rotor_coupled_optical_potential(ALPHA_C12_ROTOR_MODEL)
     solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
-    interaction = _rotor_interaction(solver, potential)
+    interaction = interaction_from_rotor_model(ALPHA_C12_ROTOR_MODEL, solver)
     smatrices, projected_boundaries = _smatrix_from_direct_rmatrix(solver, interaction)
 
     for energy_index, energy in enumerate(reference.energies):
@@ -142,9 +126,8 @@ def test_descouvemont_closed_channel_demo_matches_full_precision_reference() -> 
     """The single-interval notebook regression stays locked to the checked-in full-precision output."""
 
     reference = load_alpha_c12_single_interval_demo()
-    potential = make_rotor_coupled_optical_potential(ALPHA_C12_ROTOR_MODEL)
     solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
-    interaction = _rotor_interaction(solver, potential)
+    interaction = interaction_from_rotor_model(ALPHA_C12_ROTOR_MODEL, solver)
     smatrices, _ = _smatrix_from_direct_rmatrix(solver, interaction)
 
     for energy_index, energy in enumerate(reference.energies):
@@ -176,7 +159,6 @@ def test_descouvemont_closed_channel_reduced_spectral_and_direct_paths_agree() -
 
     energies = np.asarray([4.0, 8.0], dtype=np.float64)
     channels = channels_from_rotor_model(ALPHA_C12_ROTOR_MODEL)
-    potential = make_rotor_coupled_optical_potential(ALPHA_C12_ROTOR_MODEL)
     spectral_solver = lm.compile(
         mesh=lm.MeshSpec("legendre", "x", n=20, scale=11.0),
         channels=channels,
@@ -197,8 +179,8 @@ def test_descouvemont_closed_channel_reduced_spectral_and_direct_paths_agree() -
         V_is_complex=True,
         z1z2=(2, 6),
     )
-    spectral_V = _rotor_interaction(spectral_solver, potential)
-    direct_V = _rotor_interaction(direct_solver, potential)
+    spectral_V = interaction_from_rotor_model(ALPHA_C12_ROTOR_MODEL, spectral_solver)
+    direct_V = interaction_from_rotor_model(ALPHA_C12_ROTOR_MODEL, direct_solver)
 
     assert spectral_solver.spectrum is not None
     assert spectral_solver.smatrix is not None

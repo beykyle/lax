@@ -77,10 +77,6 @@ def test_compile_exposes_direct_rmatrix_kernel() -> None:
     assert solver.smatrix_direct is not None
     assert solver.phases_direct is not None
     assert solver.potential is not None
-    # deprecated aligned-grid observables are no longer wired
-    assert solver.rmatrix_direct_grid is None
-    assert solver.smatrix_direct_grid is None
-    assert solver.phases_direct_grid is None
     assert solver.interpolate_rmatrix is not None
     assert solver.interpolate_smatrix is not None
     assert solver.interpolate_phases is not None
@@ -291,10 +287,6 @@ def test_direct_grid_observables_match_spectral_grid_for_real_energy_dependent_p
     assert direct_solver.smatrix_direct is not None
     assert direct_solver.phases_direct is not None
     # deprecated aligned-grid observables are no longer wired
-    assert direct_solver.rmatrix_direct_grid is None
-    assert direct_solver.smatrix_direct_grid is None
-    assert direct_solver.phases_direct_grid is None
-
     spectral_interaction = spectral_solver.potential(_energy_dep_V, energy_dependent=True)
     direct_interaction = direct_solver.potential(_energy_dep_V, energy_dependent=True)
 
@@ -345,9 +337,6 @@ def test_mass_factor_grid_broadcast_scalar_reproduces_uniform() -> None:
         mass_factor_grid=jnp.full((2,), m),  # (N_E,) — broadcasts to (N_E, N_c)
     )
 
-    assert solver_uniform.rmatrix_direct_grid is None  # deprecated
-    assert solver_grid.rmatrix_direct_grid is None  # deprecated
-
     interaction_uniform = solver_uniform.potential(_energy_dep_V, energy_dependent=True)
     interaction_grid = solver_grid.potential(_energy_dep_V, energy_dependent=True)
 
@@ -381,9 +370,6 @@ def test_mass_factor_grid_2d_reproduces_uniform() -> None:
         energy_dependent=True,
         mass_factor_grid=jnp.full((2, 1), m),  # explicit (N_E, N_c) shape
     )
-
-    assert solver_uniform.rmatrix_direct_grid is None  # deprecated
-    assert solver_grid.rmatrix_direct_grid is None  # deprecated
 
     interaction_uniform = solver_uniform.potential(_energy_dep_V, energy_dependent=True)
     interaction_grid = solver_grid.potential(_energy_dep_V, energy_dependent=True)
@@ -457,10 +443,6 @@ def test_per_channel_mass_factor_grid_decoupled_matches_single_channel() -> None
         method="linear_solve",
         energy_dependent=True,
     )
-
-    assert two_ch.rmatrix_direct_grid is None  # deprecated
-    assert ch0_solver.rmatrix_direct_grid is None  # deprecated
-    assert ch1_solver.rmatrix_direct_grid is None  # deprecated
 
     # Decoupled diagonal potentials (energy-independent in value, energy-dependent in API).
     def V_ch0_fn(r: jax.Array, E: float) -> jax.Array:

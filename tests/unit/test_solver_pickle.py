@@ -81,14 +81,6 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
     ):
         assert getattr(restored, name) is not None
 
-    # deprecated aligned-grid observables are no longer wired
-    assert solver.rmatrix_direct_grid is None
-    assert solver.smatrix_direct_grid is None
-    assert solver.phases_direct_grid is None
-    assert restored.rmatrix_direct_grid is None
-    assert restored.smatrix_direct_grid is None
-    assert restored.phases_direct_grid is None
-
     assert solver.spectrum is not None
     assert solver.rmatrix is not None
     assert solver.smatrix is not None

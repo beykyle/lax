@@ -69,14 +69,13 @@ def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
     """Return the boundary-value slice for one compile-time energy."""
 
     assert solver.boundary is not None
-    k_values = None if solver.boundary.k is None else solver.boundary.k[energy_index]
     return BoundaryValues(
         H_plus=solver.boundary.H_plus[energy_index],
         H_minus=solver.boundary.H_minus[energy_index],
         H_plus_p=solver.boundary.H_plus_p[energy_index],
         H_minus_p=solver.boundary.H_minus_p[energy_index],
         is_open=solver.boundary.is_open[energy_index],
-        k=k_values,
+        k=solver.boundary.k[energy_index],
     )
 
 

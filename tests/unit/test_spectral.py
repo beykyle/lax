@@ -119,6 +119,7 @@ def test_smatrix_from_R_is_unitary_for_real_r() -> None:
         H_plus_p=jnp.asarray([0.3 + 0.2j]),
         H_minus_p=jnp.asarray([0.3 - 0.2j]),
         is_open=jnp.asarray([True]),
+        k=jnp.ones(1),
     )
 
     S = np.asarray(smatrix_from_R(R, boundary))
@@ -160,6 +161,7 @@ def test_smatrix_from_R_is_symmetric_and_unitary_for_real_two_channel_r() -> Non
         H_plus_p=solver.boundary.H_plus_p[0],
         H_minus_p=solver.boundary.H_minus_p[0],
         is_open=solver.boundary.is_open[0],
+        k=solver.boundary.k[0],
     )
     S = np.asarray(smatrix_from_R(R, boundary))
 
