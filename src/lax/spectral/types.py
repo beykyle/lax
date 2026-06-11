@@ -1,10 +1,54 @@
-"""Mesh-independent spectral decomposition type. See DESIGN.md §10.1."""
+"""Mesh-independent spectral types. See DESIGN.md §10.1.
+
+Holds the two pure-data pytrees the spectral submodule operates on:
+:class:`Spectrum` (eigenpairs + surface amplitudes) and
+:class:`BoundaryValues` (Coulomb/Whittaker matching data). Both depend only
+on JAX, keeping ``lax.spectral`` independent of the rest of the package.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 import jax
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class BoundaryValues:
+    """Coulomb and Whittaker boundary values at the channel radius.
+
+    Precomputed at compile time by ``mpmath`` for every ``(energy, channel)``
+    pair.  Open channels use Coulomb Hankel functions; closed channels use
+    Whittaker functions that decay exponentially into the barrier.
+
+    Attributes
+    ----------
+    H_plus
+        Outgoing Coulomb Hankel function ``H⁺ = G + iF`` at ``r = a``,
+        shape ``(N_E, N_c)``, complex.
+    H_minus
+        Incoming Coulomb Hankel function ``H⁻ = G - iF`` at ``r = a``,
+        shape ``(N_E, N_c)``, complex.
+    H_plus_p
+        ``ρ · d/dρ H⁺`` evaluated at ``ρ = ka``,
+        shape ``(N_E, N_c)``, complex.
+    H_minus_p
+        ``ρ · d/dρ H⁻`` evaluated at ``ρ = ka``,
+        shape ``(N_E, N_c)``, complex.
+    is_open
+        Boolean mask: ``True`` for open channels (``E > E_threshold``),
+        shape ``(N_E, N_c)``.
+    k
+        Channel wave numbers ``k_c(E)`` in fm⁻¹, shape ``(N_E, N_c)``.
+    """
+
+    H_plus: jax.Array
+    H_minus: jax.Array
+    H_plus_p: jax.Array
+    H_minus_p: jax.Array
+    is_open: jax.Array
+    k: jax.Array
 
 
 @jax.tree_util.register_dataclass
@@ -41,4 +85,4 @@ class Spectrum:
     is_hermitian: bool = field(metadata={"static": True})
 
 
-__all__ = ["Spectrum"]
+__all__ = ["BoundaryValues", "Spectrum"]

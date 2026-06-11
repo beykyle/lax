@@ -9,11 +9,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from lax.boundary._types import Mesh, OperatorMatrices, SpectrumKernel
 from lax.spectral.types import Spectrum
-from lax.types import ChannelSpec, Interaction, Method
+from lax.types import ChannelSpec, Interaction, Mesh, Method, OperatorMatrices, SpectrumKernel
 
-from .assembly import assemble_block_hamiltonian, build_Q
+from .assembly import assemble_block_hamiltonian, build_Q, uniform_mass_factor
 
 
 @dataclass(frozen=True)
@@ -31,36 +30,42 @@ class _SpectrumKernel:
         self,
         potential: jax.Array | Interaction,
     ) -> Spectrum:
-        """Return the spectral decomposition for one assembled potential.
+        """Return the spectral decomposition for one potential.
 
         Parameters
         ----------
         potential
-            :class:`~lax.Interaction` object built by ``solver.potential()`` or
-            ``solver.interaction_from_{block,array,funcs}()``.  Must have
-            ``energy_dependent=False`` (one eigendecomposition per potential).
-            For energy-dependent workflows, vmap over per-energy blocks::
-
-                jax.vmap(solver.spectrum)(interaction_list)
+            :class:`~lax.Interaction` object built by ``solver.local_potential()``/``solver.nonlocal_potential()`` or
+            ``solver.interaction_from_{block,array,funcs}()``.  An
+            energy-independent interaction yields one :class:`Spectrum`; an
+            energy-dependent interaction (``energy_dependent=True``) is dispatched
+            internally over its leading ``(N_E,)`` block axis and yields a batched
+            :class:`Spectrum` — the caller need not ``jax.vmap`` by hand
+            (§4.3/§11.1).
 
         Returns
         -------
         Spectrum
-            Eigendecomposition of the Bloch-augmented Hamiltonian.
+            Eigendecomposition of the Bloch-augmented Hamiltonian (batched over
+            energy when ``potential.energy_dependent``).
         """
-        if isinstance(potential, Interaction):
-            if potential.energy_dependent:
-                raise TypeError(
-                    "spectrum() does not accept energy-dependent Interactions directly. "
-                    "Vmap over per-energy blocks: jax.vmap(solver.spectrum)(interaction.block)."
-                )
-            potential = potential.block
+        if not isinstance(potential, Interaction):
+            raise TypeError(
+                "spectrum() accepts only Interaction objects. "
+                "Use solver.local_potential()/solver.nonlocal_potential() or solver.interaction_from_block/array/funcs to build one."
+            )
+        if potential.energy_dependent:
+            return jax.vmap(self._spectrum_one)(potential.block)
+        return self._spectrum_one(potential.block)
+
+    def _spectrum_one(self, block: jax.Array) -> Spectrum:
+        """Eigendecompose one ``(M, M)`` assembled block via the chosen backend."""
 
         if self.method == "eigh":
             return cast(
                 Spectrum,
                 _SPECTRUM_EIGH_JIT(
-                    potential,
+                    block,
                     self.mesh,
                     self.operators,
                     self.channels,
@@ -72,7 +77,7 @@ class _SpectrumKernel:
             return cast(
                 Spectrum,
                 _SPECTRUM_EIG_JIT(
-                    potential,
+                    block,
                     self.mesh,
                     self.operators,
                     self.channels,
@@ -121,6 +126,11 @@ def make_spectrum_kernel(
         JIT-compiled callable: ``kernel(V) → Spectrum``.
     """
 
+    # The eigh/eig kernels fold a single ℏ²/2μ out of the Hamiltonian
+    # (H_MeV / m0); validate that assumption here so the kernel cannot be
+    # built for a multi-μ channel set and silently produce wrong physics,
+    # even when bound without the observable layer.
+    uniform_mass_factor(channels, context="spectral eigensolve path")
     q = build_Q(mesh, channels)
     return _SpectrumKernel(
         mesh=mesh,
@@ -212,6 +222,7 @@ def _eig_via_callback(hamiltonian: jax.Array) -> tuple[jax.Array, jax.Array]:
         numpy_eig,
         result_shape,
         complex_hamiltonian,
+        vmap_method="sequential",
     )
     return cast(tuple[jax.Array, jax.Array], eigensystem)
 

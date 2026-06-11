@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import jax
+import jax.core
 import jax.numpy as jnp
 import numpy as np
 
-from lax.boundary._types import Mesh
-from lax.types import ChannelSpec, Interaction
+from lax.types import ChannelSpec, Interaction, Mesh
+
+
+def _is_concrete(value: jax.Array) -> bool:
+    """Return False when ``value`` is a JAX tracer (inside jit/vmap/grad)."""
+
+    return not isinstance(value, jax.core.Tracer)
 
 
 @dataclass(frozen=True)
@@ -52,7 +57,7 @@ class _InteractionFromArray:
             raise ValueError(
                 f"{label}: coupling matrix A must be ({self.N_c},{self.N_c}), got {A.shape}."
             )
-        if not jnp.allclose(A, A.T, atol=1e-12):
+        if _is_concrete(A) and not jnp.allclose(A, A.T, atol=1e-12):
             raise ValueError(f"{label}: coupling matrix A must be symmetric.")
 
     def __call__(
@@ -72,98 +77,66 @@ class _InteractionFromArray:
         to the full (c,cp) block.
         """
         N = self.N
-        N_c = self.N_c
         N_E = self.N_E
-        M = N_c * N
-        dtype = jnp.float64
-        all_terms = list(local) + list(nonlocal_)
-        if all_terms:
-            g0, _ = all_terms[0]
-            dtype = jnp.asarray(g0).dtype
+        M = self.N_c * N
 
-        if energy_dependent:
-            block = jnp.zeros((N_E, M, M), dtype=dtype)
-        else:
-            block = jnp.zeros((M, M), dtype=dtype)
-
+        terms: list[jax.Array] = []
         for term_idx, (g_raw, a_raw) in enumerate(local):
             g = jnp.asarray(g_raw)
             a_mat = jnp.asarray(a_raw)
             self._validate_A(a_mat, f"local term {term_idx}")
-            if energy_dependent:
-                if g.ndim != 2 or g.shape != (N_E, N):
-                    raise ValueError(
-                        f"local term {term_idx}: energy_dependent=True requires g shape "
-                        f"({N_E}, {N}), got {g.shape}."
-                    )
-                for c in range(N_c):
-                    for cp in range(N_c):
-                        if a_mat[c, cp] == 0:
-                            continue
-                        row_start = c * N
-                        col_start = cp * N
-                        diag_blocks = jax.vmap(jnp.diag)(a_mat[c, cp] * g)  # (N_E, N, N)
-                        block = block.at[
-                            :, row_start : row_start + N, col_start : col_start + N
-                        ].add(diag_blocks)
-            else:
-                if g.ndim != 1 or g.shape != (N,):
-                    raise ValueError(
-                        f"local term {term_idx}: energy_dependent=False requires g shape "
-                        f"({N},), got {g.shape}."
-                    )
-                for c in range(N_c):
-                    for cp in range(N_c):
-                        if a_mat[c, cp] == 0:
-                            continue
-                        row_start = c * N
-                        col_start = cp * N
-                        block = block.at[row_start : row_start + N, col_start : col_start + N].add(
-                            jnp.diag(a_mat[c, cp] * g)
-                        )
+            expected = (N_E, N) if energy_dependent else (N,)
+            if g.shape != expected:
+                raise ValueError(
+                    f"local term {term_idx}: energy_dependent={energy_dependent} requires "
+                    f"g shape {expected}, got {g.shape}."
+                )
+            kernel = jax.vmap(jnp.diag)(g) if energy_dependent else jnp.diag(g)
+            terms.append(_coupling_kron(a_mat, kernel))
 
         for term_idx, (g_raw, a_raw) in enumerate(nonlocal_):
             g = jnp.asarray(g_raw)
             a_mat = jnp.asarray(a_raw)
             self._validate_A(a_mat, f"nonlocal term {term_idx}")
-            if energy_dependent:
-                if g.ndim != 3 or g.shape != (N_E, N, N):
-                    raise ValueError(
-                        f"nonlocal term {term_idx}: energy_dependent=True requires g shape "
-                        f"({N_E}, {N}, {N}), got {g.shape}."
-                    )
-                scaled = g * self.gauss_scale[None, :, :]  # (N_E, N, N)
-                for c in range(N_c):
-                    for cp in range(N_c):
-                        if a_mat[c, cp] == 0:
-                            continue
-                        row_start = c * N
-                        col_start = cp * N
-                        block = block.at[
-                            :, row_start : row_start + N, col_start : col_start + N
-                        ].add(a_mat[c, cp] * scaled)
-            else:
-                if g.ndim != 2 or g.shape != (N, N):
-                    raise ValueError(
-                        f"nonlocal term {term_idx}: energy_dependent=False requires g shape "
-                        f"({N}, {N}), got {g.shape}."
-                    )
-                scaled = g * self.gauss_scale  # (N, N)
-                for c in range(N_c):
-                    for cp in range(N_c):
-                        if a_mat[c, cp] == 0:
-                            continue
-                        row_start = c * N
-                        col_start = cp * N
-                        block = block.at[row_start : row_start + N, col_start : col_start + N].add(
-                            a_mat[c, cp] * scaled
-                        )
+            expected = (N_E, N, N) if energy_dependent else (N, N)
+            if g.shape != expected:
+                raise ValueError(
+                    f"nonlocal term {term_idx}: energy_dependent={energy_dependent} requires "
+                    f"g shape {expected}, got {g.shape}."
+                )
+            terms.append(_coupling_kron(a_mat, g * self.gauss_scale))
 
+        shape = (N_E, M, M) if energy_dependent else (M, M)
+        dtype = jnp.result_type(*terms) if terms else jnp.float64
+        block: jax.Array = jnp.zeros(shape, dtype=dtype)
+        for term in terms:
+            block = block + term
+
+        # Value checks need concrete arrays: inside jit/vmap the block is a tracer
+        # and boolean conversion would crash, so symmetry is validated only when the
+        # Interaction is built outside jax transformations.
         first_block = block[0] if energy_dependent else block
-        if not jnp.allclose(first_block, first_block.T, atol=1e-10):
+        if _is_concrete(first_block) and not jnp.allclose(first_block, first_block.T, atol=1e-10):
             raise ValueError("Assembled Interaction block is not symmetric.")
 
         return Interaction(block=block, energy_dependent=energy_dependent)
+
+
+def _coupling_kron(a_mat: jax.Array, kernel: jax.Array) -> jax.Array:
+    """Return the coupled-channel block ``A ⊗ kernel``.
+
+    ``kernel`` is ``(N, N)`` or, with a leading energy axis, ``(N_E, N, N)``;
+    the result is ``(M, M)`` or ``(N_E, M, M)`` with ``M = N_c·N`` and
+    block ``(c, cp)`` equal to ``A[c, cp] · kernel``.
+    """
+
+    n_c = a_mat.shape[0]
+    n = kernel.shape[-1]
+    if kernel.ndim == 3:
+        batched: jax.Array = jnp.einsum("cd,eij->ecidj", a_mat, kernel)
+        return batched.reshape(kernel.shape[0], n_c * n, n_c * n)
+    flat: jax.Array = jnp.einsum("cd,ij->cidj", a_mat, kernel)
+    return flat.reshape(n_c * n, n_c * n)
 
 
 @dataclass(frozen=True)
@@ -192,15 +165,14 @@ class _InteractionFromFuncs:
             g(r, r', E) — energy-dependent;  r,r' shape (N,N), E scalar, returns (N,N)
         """
         r = self.radii
-        N_E = self.N_E
         ri, rj = jnp.meshgrid(r, r, indexing="ij")  # (N, N)
+        # One device→host transfer up front instead of one per energy sample.
+        energy_values = [float(energy) for energy in np.asarray(self.energies)]
 
         local_arrays: list[Any] = []
         for g_fn, a_mat in local:
             if energy_dependent:
-                g_arr = jnp.stack(
-                    [g_fn(r, float(self.energies[ie])) for ie in range(N_E)]
-                )  # (N_E, N)
+                g_arr = jnp.stack([g_fn(r, energy) for energy in energy_values])  # (N_E, N)
             else:
                 g_arr = g_fn(r)  # (N,)
             local_arrays.append((g_arr, a_mat))
@@ -208,9 +180,7 @@ class _InteractionFromFuncs:
         nonlocal_arrays: list[Any] = []
         for g_fn, a_mat in nonlocal_:
             if energy_dependent:
-                g_arr = jnp.stack(
-                    [g_fn(ri, rj, float(self.energies[ie])) for ie in range(N_E)]
-                )  # (N_E, N, N)
+                g_arr = jnp.stack([g_fn(ri, rj, energy) for energy in energy_values])  # (N_E, N, N)
             else:
                 g_arr = g_fn(ri, rj)  # (N, N)
             nonlocal_arrays.append((g_arr, a_mat))
@@ -271,14 +241,17 @@ def make_interaction_from_funcs(
 
 @dataclass(frozen=True)
 class _PotentialBuilder:
-    """Pickle-safe ``solver.potential(fn, coupling, energy_dependent)`` callable.
+    """Pickle-safe single-kind ``solver.{local,nonlocal}_potential`` callable.
 
-    Wraps ``_InteractionFromFuncs`` with arity-based local/nonlocal dispatch and
-    a sensible ``coupling`` default for single-channel problems.
+    Wraps ``_InteractionFromFuncs`` for one fixed ``kind`` (``"local"`` or
+    ``"nonlocal"``), with a sensible ``coupling`` default for single-channel
+    problems.  The local/nonlocal choice is made explicit by the entry point the
+    caller picks, so there is no arity inference.
     """
 
     n_c: int
     funcs_builder: _InteractionFromFuncs
+    kind: Literal["local", "nonlocal"]
 
     def __call__(
         self,
@@ -292,10 +265,10 @@ class _PotentialBuilder:
         Parameters
         ----------
         fn
-            Potential function.  Arity determines local vs nonlocal:
+            Potential function for this builder's fixed ``kind``:
 
-            * ``energy_dependent=False``: ``fn(r)`` → local, ``fn(r, r')`` → nonlocal
-            * ``energy_dependent=True``:  ``fn(r, E)`` → local, ``fn(r, r', E)`` → nonlocal
+            * local  — ``fn(r)`` or, with ``energy_dependent=True``, ``fn(r, E)``
+            * nonlocal — ``fn(r, r')`` or ``fn(r, r', E)``
 
         coupling
             ``(N_c, N_c)`` symmetric coupling matrix.  Defaults to ``[[1.0]]``
@@ -318,47 +291,32 @@ class _PotentialBuilder:
                 "re-compile with energies=... to use energy-dependent potentials."
             )
 
-        n_args = len(inspect.signature(fn).parameters)  # type: ignore[arg-type]
-        if energy_dependent:
-            if n_args == 2:
-                return self.funcs_builder(local=[(fn, coupling)], energy_dependent=True)  # type: ignore[list-item]
-            elif n_args == 3:
-                return self.funcs_builder(nonlocal_=[(fn, coupling)], energy_dependent=True)  # type: ignore[list-item]
-            else:
-                raise ValueError(
-                    f"For energy_dependent=True, fn must take 2 args fn(r, E) "
-                    f"(local) or 3 args fn(r, r', E) (nonlocal); got {n_args}."
-                )
-        else:
-            if n_args == 1:
-                return self.funcs_builder(local=[(fn, coupling)], energy_dependent=False)  # type: ignore[list-item]
-            elif n_args == 2:
-                return self.funcs_builder(nonlocal_=[(fn, coupling)], energy_dependent=False)  # type: ignore[list-item]
-            else:
-                raise ValueError(
-                    f"fn must take 1 arg fn(r) (local) or 2 args fn(r, r') "
-                    f"(nonlocal); got {n_args}."
-                )
+        if self.kind == "local":
+            return self.funcs_builder(local=[(fn, coupling)], energy_dependent=energy_dependent)  # type: ignore[list-item]
+        return self.funcs_builder(nonlocal_=[(fn, coupling)], energy_dependent=energy_dependent)  # type: ignore[list-item]
 
 
-def make_potential_builder(
+def make_potential_builders(
     mesh: Mesh,
     channels: tuple[ChannelSpec, ...],
     energies: jax.Array,
-) -> _PotentialBuilder:
-    """Return ``solver.potential`` — a simple callable that builds an Interaction from a function.
+) -> tuple[_PotentialBuilder, _PotentialBuilder]:
+    """Return ``(local_potential, nonlocal_potential)`` builders for one solver.
 
-    The returned callable auto-detects local vs nonlocal from function arity and
-    defaults ``coupling`` to ``[[1.0]]`` for single-channel problems.  See
-    :class:`_PotentialBuilder` for the full signature.
+    Each builds an :class:`~lax.Interaction` from a function of the corresponding
+    kind, defaulting ``coupling`` to ``[[1.0]]`` for single-channel problems.  Both
+    share one underlying ``_InteractionFromFuncs``.  See :class:`_PotentialBuilder`.
     """
     funcs_builder = make_interaction_from_funcs(mesh, channels, energies)
-    return _PotentialBuilder(n_c=len(channels), funcs_builder=funcs_builder)
+    n_c = len(channels)
+    local = _PotentialBuilder(n_c=n_c, funcs_builder=funcs_builder, kind="local")
+    nonlocal_ = _PotentialBuilder(n_c=n_c, funcs_builder=funcs_builder, kind="nonlocal")
+    return local, nonlocal_
 
 
 __all__ = [
     "make_interaction_from_array",
     "make_interaction_from_block",
     "make_interaction_from_funcs",
-    "make_potential_builder",
+    "make_potential_builders",
 ]

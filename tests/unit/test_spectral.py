@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 import lax as lm
-from lax.boundary._types import BoundaryValues
 from lax.models import interaction_from_reid_np_j1, reid_np_j1_channels
 from lax.spectral import (
     Spectrum,
@@ -15,6 +14,7 @@ from lax.spectral import (
     rmatrix_from_spectrum,
     smatrix_from_R,
 )
+from lax.types import BoundaryValues
 
 pytest.importorskip("jax")
 

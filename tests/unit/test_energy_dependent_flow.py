@@ -13,16 +13,30 @@ pytest.importorskip("scipy")
 HBAR2_2MU = 41.472
 
 
-def _make_potential(solver: lm.Solver, energy: jax.Array) -> jax.Array:
-    """Return a smooth energy-dependent non-local potential."""
+def _spectra(solver: lm.Solver, energies: jax.Array) -> object:
+    """Build the energy-dependent non-local Interaction and decompose it.
+
+    The bare form factor ``g(r, r'; E)`` (shape ``(N_E, N, N)``) is passed to
+    ``interaction_from_array``, which owns the Gauss scaling ``√(λ_i λ_j)·a`` and the
+    coupling kron; ``spectrum`` then dispatches over the energy axis internally.
+    """
 
     radii = solver.mesh.radii
     radius_i, radius_j = jnp.meshgrid(radii, radii, indexing="ij")
-    weights_i, weights_j = jnp.meshgrid(solver.mesh.weights, solver.mesh.weights, indexing="ij")
-    kernel = (
-        -2.0 * 1.25 * (0.23 + 1.25) ** 2 * jnp.exp(-1.25 * (radius_i + radius_j)) + 0.01 * energy
-    ) * HBAR2_2MU
-    return (kernel * jnp.sqrt(weights_i * weights_j) * solver.mesh.scale)[None, None, :, :]
+
+    def kernel(energy: jax.Array) -> jax.Array:  # bare g(r, r'; E), shape (N, N)
+        return (
+            -2.0 * 1.25 * (0.23 + 1.25) ** 2 * jnp.exp(-1.25 * (radius_i + radius_j))
+            + 0.01 * energy
+        ) * HBAR2_2MU
+
+    g = jax.vmap(kernel)(energies)  # (N_E, N, N)
+    assert solver.interaction_from_array is not None
+    assert solver.spectrum is not None
+    interaction = solver.interaction_from_array(
+        nonlocal_=[(g, np.ones((1, 1)))], energy_dependent=True
+    )
+    return solver.spectrum(interaction)
 
 
 def _manual_smatrix_grid(solver: lm.Solver, spectra: object, energies: jax.Array) -> jax.Array:
@@ -72,13 +86,12 @@ def test_energy_dependent_smatrix_grid_matches_manual_flow() -> None:
         energies=energies,
         energy_dependent=True,
     )
-    potentials = jax.vmap(lambda energy: _make_potential(solver, energy))(energies)
 
     assert solver.spectrum is not None
     assert solver.smatrix_grid is not None
     assert solver.phases_grid is not None
 
-    spectra = jax.vmap(solver.spectrum)(potentials)
+    spectra = _spectra(solver, energies)
     manual_smatrix = _manual_smatrix_grid(solver, spectra, energies)
     bound_smatrix = solver.smatrix_grid(spectra)
     bound_phases = solver.phases_grid(spectra)
@@ -105,13 +118,12 @@ def test_energy_dependent_fixed_spectrum_semantics_are_unchanged() -> None:
         energies=energies,
         energy_dependent=True,
     )
-    potentials = jax.vmap(lambda energy: _make_potential(solver, energy))(energies)
 
     assert solver.spectrum is not None
     assert solver.smatrix is not None
     assert solver.smatrix_grid is not None
 
-    spectra = jax.vmap(solver.spectrum)(potentials)
+    spectra = _spectra(solver, energies)
     fixed_spectrum = jax.tree.map(lambda leaf: leaf[0], spectra)
     fixed_grid = solver.smatrix(fixed_spectrum)
     manual_fixed_grid = _manual_smatrix_from_fixed_spectrum(solver, fixed_spectrum, energies)
@@ -144,13 +156,6 @@ def test_energy_dependent_pade_flow_matches_dense_grid() -> None:
         energy_dependent=True,
     )
 
-    sparse_potentials = jax.vmap(lambda energy: _make_potential(sparse_solver, energy))(
-        sparse_energies
-    )
-    dense_potentials = jax.vmap(lambda energy: _make_potential(dense_solver, energy))(
-        dense_energies
-    )
-
     assert sparse_solver.spectrum is not None
     assert sparse_solver.smatrix_grid is not None
     assert sparse_solver.interpolate_smatrix is not None
@@ -158,8 +163,8 @@ def test_energy_dependent_pade_flow_matches_dense_grid() -> None:
     assert dense_solver.spectrum is not None
     assert dense_solver.smatrix_grid is not None
 
-    sparse_spectra = jax.vmap(sparse_solver.spectrum)(sparse_potentials)
-    dense_spectra = jax.vmap(dense_solver.spectrum)(dense_potentials)
+    sparse_spectra = _spectra(sparse_solver, sparse_energies)
+    dense_spectra = _spectra(dense_solver, dense_energies)
 
     sparse_s = sparse_solver.smatrix_grid(sparse_spectra)
     dense_s = dense_solver.smatrix_grid(dense_spectra)
@@ -202,20 +207,18 @@ def test_constant_mass_factor_grid_reproduces_scalar_result() -> None:
         mass_factor_grid=mu_grid,
     )
 
-    potentials = jax.vmap(lambda e: _make_potential(scalar_solver, e))(energies)
-
     assert scalar_solver.spectrum is not None
     assert grid_solver.spectrum is not None
     assert scalar_solver.smatrix_grid is not None
     assert grid_solver.smatrix_grid is not None
 
     # Scalar path: spectrum uses ChannelSpec.mass_factor
-    scalar_spectra = jax.vmap(scalar_solver.spectrum)(potentials)
+    scalar_spectra = _spectra(scalar_solver, energies)
     scalar_phases = scalar_solver.phases_grid(scalar_spectra)
 
     # Grid path: mass factor is baked in at compile time; spectrum uses ChannelSpec.mass_factor
     # (which equals mu_scalar), and phases_grid uses the constant mass_factor_grid boundary.
-    grid_spectra = jax.vmap(grid_solver.spectrum)(potentials)
+    grid_spectra = _spectra(grid_solver, energies)
     grid_phases = grid_solver.phases_grid(grid_spectra)
 
     assert np.allclose(
@@ -250,7 +253,6 @@ def test_varying_mass_factor_grid_changes_phases() -> None:
         mass_factor_grid=mu_grid,
     )
 
-    potentials = jax.vmap(lambda e: _make_potential(const_solver, e))(energies)
     mu_grid_np = np.asarray(mu_grid)
 
     assert const_solver.spectrum is not None
@@ -258,13 +260,13 @@ def test_varying_mass_factor_grid_changes_phases() -> None:
     assert const_solver.phases_grid is not None
     assert mu_solver.phases_grid is not None
 
-    const_spectra = jax.vmap(const_solver.spectrum)(potentials)
+    const_spectra = _spectra(const_solver, energies)
     const_phases = const_solver.phases_grid(const_spectra)
 
     # Mass factors are baked at compile time; spectrum always uses ChannelSpec.mass_factor.
     # The energy-dependent mu enters through the compiled boundary values (k_c, η_c) in
     # phases_grid, so mu_phases differ from const_phases even though the spectra agree.
-    mu_spectra = jax.vmap(mu_solver.spectrum)(potentials)
+    mu_spectra = _spectra(mu_solver, energies)
     mu_phases = mu_solver.phases_grid(mu_spectra)
 
     # Phases must differ — the energy-dependent mu changes the boundary matching (k_c, η_c).

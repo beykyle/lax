@@ -15,9 +15,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from lax import constants
 from lax._angular import wigner_3j, wigner_6j
-from lax.boundary._types import Solver
-from lax.types import ChannelSpec, Interaction
+from lax.types import ChannelSpec, Interaction, Solver
 
 
 @dataclass(frozen=True)
@@ -333,7 +333,9 @@ def uniform_sphere_coulomb_potential(
         Coulomb potential in MeV.
     """
 
-    prefactor = projectile_charge * target_charge * 1.44
+    # constants.E2 is read at call time so tests can override the Coulomb
+    # constant (e.g. to the rounded 1.44 used by published benchmark references).
+    prefactor = projectile_charge * target_charge * constants.E2
     inside = prefactor * (3.0 - (radii / radius) ** 2) / (2.0 * radius)
     outside = prefactor / radii
     return jnp.where(radii <= radius, inside, outside)

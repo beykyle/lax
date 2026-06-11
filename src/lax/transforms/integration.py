@@ -8,7 +8,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 
-from lax.boundary._types import Integrator, Mesh
+from lax.types import Integrator, Mesh
 
 
 @dataclass(frozen=True)

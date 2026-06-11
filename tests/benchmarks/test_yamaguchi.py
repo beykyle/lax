@@ -17,7 +17,7 @@ large-radius Baye/Hesse value is reached once the channel radius is increased;
 the prototype and the library both recover it at `a=15, N=20`.
 
 This test is the keystone benchmark: it exercises the full chain
-  solver.potential → spectrum → rmatrix → smatrix → phases.
+  solver.local_potential → spectrum → rmatrix → smatrix → phases.
 """
 
 import numpy as np
@@ -99,7 +99,7 @@ def test_yamaguchi_phase_shifts(reference: YamaguchiReference) -> None:
         solvers=("spectrum", "phases"),
         energies=jnp.asarray(reference.energies),
     )
-    potential = solver.potential(_yamaguchi_kernel)
+    potential = solver.nonlocal_potential(_yamaguchi_kernel)
     spectrum = solver.spectrum(potential)
     phases_deg = np.asarray(solver.phases(spectrum))[:, 0] * (180.0 / np.pi)
 
@@ -125,7 +125,7 @@ def test_yamaguchi_phase_shifts_direct_rmatrix(reference: YamaguchiReference) ->
         energies=reference.energies,
         method="linear_solve",
     )
-    V = solver.potential(_yamaguchi_kernel)
+    V = solver.nonlocal_potential(_yamaguchi_kernel)
     phases_deg = np.asarray(_phase_from_direct_rmatrix(solver, V))[:, 0] * (180.0 / np.pi)
 
     assert np.allclose(phases_deg, reference.phases_deg, atol=1.0e-2, rtol=0.0)
@@ -149,7 +149,7 @@ def test_yamaguchi_direct_matches_spectral(reference: YamaguchiReference) -> Non
         solvers=("spectrum", "rmatrix", "phases", "rmatrix_direct"),
         energies=reference.energies,
     )
-    V = solver.potential(_yamaguchi_kernel)
+    V = solver.nonlocal_potential(_yamaguchi_kernel)
     spectrum = solver.spectrum(V)
     spectral_delta = np.asarray(solver.phases(spectrum))[:, 0]
     direct_delta = np.asarray(_phase_from_direct_rmatrix(solver, V))[:, 0]
@@ -172,7 +172,7 @@ def test_yamaguchi_large_radius_matches_baye_reference(a, n, E, ref_deg, tol):
         solvers=("spectrum", "phases"),
         energies=jnp.array([E]),
     )
-    potential = solver.potential(_yamaguchi_kernel)
+    potential = solver.nonlocal_potential(_yamaguchi_kernel)
     delta = float(solver.phases(solver.spectrum(potential))[0, 0]) * (180.0 / np.pi)
 
     assert abs(delta - ref_deg) < tol, (
@@ -205,8 +205,8 @@ def test_complex_yamaguchi_eig_matches_real_limit(a, n, E):
         V_is_complex=True,
         method="eig",
     )
-    real_potential = real_solver.potential(_yamaguchi_kernel)
-    complex_potential = complex_solver.potential(
+    real_potential = real_solver.nonlocal_potential(_yamaguchi_kernel)
+    complex_potential = complex_solver.nonlocal_potential(
         lambda r1, r2: _complex_yamaguchi_kernel(r1, r2, imag_strength)
     )
     real_phase = float(real_solver.phases(real_solver.spectrum(real_potential))[0, 0])

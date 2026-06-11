@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from lax.boundary._types import Mesh, OperatorMatrices
-from lax.types import MeshFamily, Regularization
+from lax.types import Mesh, MeshFamily, OperatorMatrices, Regularization
 
 type Builder = Callable[..., tuple[Mesh, OperatorMatrices]]
 

@@ -1,13 +1,9 @@
-"""Boundary-value helpers and internal solver pytrees."""
+"""Boundary-value helpers (Coulomb and Whittaker functions at the channel radius)."""
 
-from lax.boundary._types import BoundaryValues, Mesh, OperatorMatrices, Solver, TransformMatrices
 from lax.boundary.coulomb import compute_boundary_values
+from lax.spectral.types import BoundaryValues
 
 __all__ = [
     "BoundaryValues",
-    "Mesh",
-    "OperatorMatrices",
-    "Solver",
-    "TransformMatrices",
     "compute_boundary_values",
 ]

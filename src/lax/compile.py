@@ -17,37 +17,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from lax.boundary import compute_boundary_values
-from lax.boundary._types import (
-    BoundaryValues,
-    DirectRMatrixKernel,
-    DoubleFourierTransform,
-    EigenpairAccessor,
-    FourierTransform,
-    FromGridVectorTransform,
-    GreenFunctionObservable,
-    GridMatrixTransform,
-    GridVectorTransform,
-    Integrator,
-    InterpolatorBuilder,
-    Mesh,
-    OperatorMatrices,
-    PhasesDirectObservable,
-    RMatrixObservable,
-    SMatrixDirectObservable,
-    Solver,
-    SpectrumGridObservable,
-    SpectrumKernel,
-    SpectrumObservable,
-    TransformMatrices,
-    WavefunctionDirectObservable,
-    WavefunctionObservable,
-)
 from lax.meshes import build_mesh
 from lax.operators.interaction import (
     make_interaction_from_array,
     make_interaction_from_block,
     make_interaction_from_funcs,
-    make_potential_builder,
+    make_potential_builders,
 )
 from lax.solvers import (
     bind_grid_observables,
@@ -67,7 +42,34 @@ from lax.transforms import (
     make_integration,
     make_to_grid,
 )
-from lax.types import ChannelSpec, MeshSpec, Method
+from lax.types import (
+    BoundaryValues,
+    ChannelSpec,
+    DirectRMatrixKernel,
+    DoubleFourierTransform,
+    EigenpairAccessor,
+    FourierTransform,
+    FromGridVectorTransform,
+    GreenFunctionObservable,
+    GridMatrixTransform,
+    GridVectorTransform,
+    Integrator,
+    InterpolatorBuilder,
+    Mesh,
+    MeshSpec,
+    Method,
+    OperatorMatrices,
+    PhasesDirectObservable,
+    RMatrixObservable,
+    SMatrixDirectObservable,
+    Solver,
+    SpectrumGridObservable,
+    SpectrumKernel,
+    SpectrumObservable,
+    TransformMatrices,
+    WavefunctionDirectObservable,
+    WavefunctionObservable,
+)
 
 
 @dataclass(frozen=True)
@@ -117,7 +119,8 @@ class _ObservableBundle:
     interaction_from_block: Callable[..., Any] | None
     interaction_from_array: Callable[..., Any] | None
     interaction_from_funcs: Callable[..., Any] | None
-    potential: Callable[..., Any] | None
+    local_potential: Callable[..., Any] | None
+    nonlocal_potential: Callable[..., Any] | None
     interpolate_rmatrix: InterpolatorBuilder | None
     interpolate_smatrix: InterpolatorBuilder | None
     interpolate_phases: InterpolatorBuilder | None
@@ -158,7 +161,7 @@ def compile(
     solvers
         Runtime entry points to expose on the returned :class:`~lax.Solver`.
         The potential passed to ``solver.spectrum(V)`` or ``solver.rmatrix_direct(V)``
-        must be an :class:`~lax.Interaction`.  Build one with ``solver.potential(fn)``
+        must be an :class:`~lax.Interaction`.  Build one with ``solver.local_potential(fn)``/``solver.nonlocal_potential(fn)``
         or the ``solver.interaction_from_{block,array,funcs}`` builders.
     energies
         Compile-time energy grid used for boundary-value-dependent observables and
@@ -295,20 +298,30 @@ def _resolve_compile_request(
     channels_tuple = tuple(channels)
     operators_set = set(operators)
     solvers_set = frozenset(solvers)
-    needs_spectrum = bool(
-        solvers_set & {"spectrum", "rmatrix", "smatrix", "phases", "greens", "wavefunction"}
-    )
-    needs_boundary = bool(solvers_set & {"smatrix", "phases", "rmatrix_direct"})
-    if (needs_boundary or energy_dependent) and energies is None:
-        msg = "`energies` is required for continuum solvers or energy-dependent potentials."
-        raise ValueError(msg)
-    if needs_spectrum or "rmatrix_direct" in solvers_set:
-        operators_set.add("T+L")
 
     selected_method = method or _default_method(V_is_complex)
     if selected_method not in {"eigh", "eig", "linear_solve"}:
         msg = f"Method {selected_method!r} is not implemented in the MVP compile() path."
         raise ValueError(msg)
+
+    # "wavefunction" is served by the spectral path under eigh/eig, but by the
+    # direct wavefunction_direct kernel under linear_solve (§14, Example 16.8).
+    wants_wavefunction = "wavefunction" in solvers_set
+    wavefunction_via_spectrum = wants_wavefunction and selected_method in {"eigh", "eig"}
+    wavefunction_via_direct = wants_wavefunction and selected_method == "linear_solve"
+
+    needs_spectrum = (
+        bool(solvers_set & {"spectrum", "rmatrix", "smatrix", "phases", "greens"})
+        or wavefunction_via_spectrum
+    )
+    needs_boundary = bool(solvers_set & {"smatrix", "phases", "rmatrix_direct"})
+    # wavefunction_direct indexes the compile-time energy grid, so it needs one.
+    if (needs_boundary or energy_dependent or wavefunction_via_direct) and energies is None:
+        msg = "`energies` is required for continuum solvers or energy-dependent potentials."
+        raise ValueError(msg)
+    if needs_spectrum or "rmatrix_direct" in solvers_set or wavefunction_via_direct:
+        operators_set.add("T+L")
+
     if needs_spectrum and selected_method not in {"eigh", "eig"}:
         msg = f"Method {selected_method!r} is not implemented in the MVP spectrum path."
         raise ValueError(msg)
@@ -320,7 +333,7 @@ def _resolve_compile_request(
         method=selected_method,
         needs_spectrum=needs_spectrum,
         needs_boundary=needs_boundary,
-        keep_eigenvectors=bool(solvers_set & {"greens", "wavefunction"}),
+        keep_eigenvectors=bool(solvers_set & {"greens"}) or wavefunction_via_spectrum,
     )
 
 
@@ -540,18 +553,19 @@ def _bind_solver_observables(
             boundary,
             mass_factor_grid,
         )
-        from lax.solvers.linear_solve import (
-            _DirectRMatrixKernel,  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
-        )
-
-        if isinstance(rmatrix_direct_fn, _DirectRMatrixKernel):
-            smatrix_direct_fn = make_smatrix_direct_observable(rmatrix_direct_fn, boundary)
-            phases_direct_fn = make_phases_direct_observable(smatrix_direct_fn)
+        smatrix_direct_fn = make_smatrix_direct_observable(rmatrix_direct_fn, boundary)
+        phases_direct_fn = make_phases_direct_observable(smatrix_direct_fn)
+    # wavefunction_direct is available whenever the direct path is active
+    # ("rmatrix_direct"), and is the binding for "wavefunction" under
+    # method="linear_solve" (§14, Example 16.8) where no spectral path exists.
+    wavefunction_via_direct = "wavefunction" in request.solvers and request.method == "linear_solve"
+    if "rmatrix_direct" in request.solvers or wavefunction_via_direct:
         wavefunction_direct_fn = make_direct_wavefunction_kernel(
             mesh,
             operators,
             request.channels,
             energies,
+            mass_factor_grid,
         )
 
     interpolate_rmatrix_fn: InterpolatorBuilder | None = None
@@ -567,7 +581,9 @@ def _bind_solver_observables(
     interaction_from_block_fn = make_interaction_from_block(mesh, request.channels, energies)
     interaction_from_array_fn = make_interaction_from_array(mesh, request.channels, energies)
     interaction_from_funcs_fn = make_interaction_from_funcs(mesh, request.channels, energies)
-    potential_fn = make_potential_builder(mesh, request.channels, energies)
+    local_potential_fn, nonlocal_potential_fn = make_potential_builders(
+        mesh, request.channels, energies
+    )
 
     return _ObservableBundle(
         spectrum=spectrum_fn,
@@ -587,7 +603,8 @@ def _bind_solver_observables(
         interaction_from_block=interaction_from_block_fn,
         interaction_from_array=interaction_from_array_fn,
         interaction_from_funcs=interaction_from_funcs_fn,
-        potential=potential_fn,
+        local_potential=local_potential_fn,
+        nonlocal_potential=nonlocal_potential_fn,
         interpolate_rmatrix=interpolate_rmatrix_fn,
         interpolate_smatrix=interpolate_smatrix_fn,
         interpolate_phases=interpolate_phases_fn,
@@ -638,7 +655,8 @@ def _assemble_solver(
         interaction_from_block=observables.interaction_from_block,
         interaction_from_array=observables.interaction_from_array,
         interaction_from_funcs=observables.interaction_from_funcs,
-        potential=observables.potential,
+        local_potential=observables.local_potential,
+        nonlocal_potential=observables.nonlocal_potential,
         interpolate_rmatrix=observables.interpolate_rmatrix,
         interpolate_smatrix=observables.interpolate_smatrix,
         interpolate_phases=observables.interpolate_phases,

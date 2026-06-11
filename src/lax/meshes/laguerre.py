@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import math
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import scipy.special as sc
 
-from lax.boundary._types import Mesh, OperatorMatrices
-
-from ._registry import register
+from lax.meshes._registry import register
+from lax.meshes._utils import diagonal_operator as _diagonal_operator
+from lax.meshes._utils import to_jax_array as _to_jax_array
+from lax.types import Mesh, OperatorMatrices
 
 
 @register("laguerre", "x")
@@ -225,21 +224,6 @@ def _modified_laguerre_x2_kinetic(
     )
     matrix[row_idx, col_idx] = off_diagonal
     matrix[col_idx, row_idx] = off_diagonal
-    return matrix
-
-
-def _to_jax_array(values: np.ndarray) -> jax.Array:
-    """Convert a NumPy array to a runtime JAX array with an explicit type."""
-
-    array: jax.Array = jnp.asarray(values)
-    return array
-
-
-def _diagonal_operator(values: np.ndarray) -> jax.Array:
-    """Construct a diagonal JAX operator from compile-time diagonal values."""
-
-    diagonal = _to_jax_array(values)
-    matrix: jax.Array = jnp.diag(diagonal)
     return matrix
 
 

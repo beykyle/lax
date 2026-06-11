@@ -10,9 +10,9 @@ import scipy.integrate as si
 import scipy.special as sc
 
 import lax as lm
-from lax.boundary._types import Solver
 from lax.meshes._basis_eval import basis_at
 from lax.transforms.fourier import compute_F_momentum
+from lax.types import Solver
 
 pytest.importorskip("jax")
 pytest.importorskip("scipy")

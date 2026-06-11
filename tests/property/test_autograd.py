@@ -34,6 +34,17 @@ def _local_gaussian_potential(draw: st.DrawFn) -> jax.Array:
     return jnp.asarray(V[None, None, :])  # shape (1, 1, N)
 
 
+def _interaction(V: jax.Array) -> lm.Interaction:
+    """Wrap a raw ``(1, 1, N)`` local potential as an Interaction for spectrum().
+
+    The assembled single-channel block is ``diag(V[0, 0])`` — identical to the
+    assembly the kernel performed internally — so the result (and its gradient
+    w.r.t. ``V``) is unchanged.
+    """
+
+    return lm.Interaction(block=jnp.diag(V[0, 0]), energy_dependent=False)
+
+
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
@@ -42,7 +53,7 @@ def test_spectrum_eigenvalues_are_differentiable(V: jax.Array) -> None:
     assert _SOLVER.spectrum is not None
 
     def loss(V: jax.Array) -> jax.Array:
-        return jnp.sum(_SOLVER.spectrum(V).eigenvalues)
+        return jnp.sum(_SOLVER.spectrum(_interaction(V)).eigenvalues)
 
     grad = jax.grad(loss)(V)
     assert jnp.all(jnp.isfinite(grad))
@@ -57,7 +68,7 @@ def test_smatrix_is_differentiable(V: jax.Array) -> None:
     assert _SOLVER.smatrix is not None
 
     def loss(V: jax.Array) -> jax.Array:
-        spec = _SOLVER.spectrum(V)
+        spec = _SOLVER.spectrum(_interaction(V))
         return jnp.sum(_SOLVER.smatrix(spec).real)
 
     grad = jax.grad(loss)(V)

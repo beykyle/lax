@@ -15,8 +15,17 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 
-from lax.boundary._types import (
+from lax.spectral.interpolation import pade_interpolate
+from lax.spectral.matching import open_channel_smatrix_from_R, phases_from_S
+from lax.spectral.observables import (
+    greens_from_spectrum,
+    rmatrix_from_spectrum,
+    wavefunction_internal_from_spectrum,
+)
+from lax.spectral.types import Spectrum
+from lax.types import (
     BoundaryValues,
+    ChannelSpec,
     EigenpairAccessor,
     GreenFunctionObservable,
     InterpolatorBuilder,
@@ -26,15 +35,8 @@ from lax.boundary._types import (
     SpectrumObservable,
     WavefunctionObservable,
 )
-from lax.spectral.interpolation import pade_interpolate
-from lax.spectral.matching import phases_from_S, smatrix_from_R
-from lax.spectral.observables import (
-    greens_from_spectrum,
-    rmatrix_from_spectrum,
-    wavefunction_internal_from_spectrum,
-)
-from lax.spectral.types import Spectrum
-from lax.types import ChannelSpec
+
+from .assembly import uniform_mass_factor
 
 
 @dataclass(frozen=True)
@@ -637,53 +639,6 @@ _PHASES_GRID_JIT = jax.jit(
 )
 
 
-def _decouple_closed_channels(
-    rmatrix: jax.Array,
-    h_plus: jax.Array,
-    h_plus_p: jax.Array,
-    is_open: jax.Array,
-) -> jax.Array:
-    """Fold closed-channel Whittaker boundary conditions into an effective R-matrix."""
-
-    bloch = _closed_channel_bloch(h_plus, h_plus_p, is_open)
-    identity: jax.Array = jnp.eye(
-        rmatrix.shape[0],
-        dtype=rmatrix.dtype,
-    )
-    correction = identity - rmatrix @ jnp.diag(bloch)
-    return cast(
-        jax.Array,
-        jnp.linalg.solve(
-            correction.T,
-            rmatrix.T,
-        ).T,
-    )
-
-
-def _match_rmatrix(
-    rmatrix: jax.Array,
-    h_plus: jax.Array,
-    h_minus: jax.Array,
-    h_plus_p: jax.Array,
-    h_minus_p: jax.Array,
-    is_open: jax.Array,
-    k: jax.Array,
-) -> jax.Array:
-    """Convert one channel-space R-matrix into the physical S-matrix."""
-
-    decoupled_r = _decouple_closed_channels(rmatrix, h_plus, h_plus_p, is_open)
-    projected_r, boundary_slice = _project_open_channels(
-        decoupled_r,
-        h_plus,
-        h_minus,
-        h_plus_p,
-        h_minus_p,
-        is_open,
-        k,
-    )
-    return smatrix_from_R(projected_r, boundary_slice)
-
-
 def _match_one_energy(
     rmatrix: jax.Array,
     h_plus: jax.Array,
@@ -693,83 +648,22 @@ def _match_one_energy(
     is_open: jax.Array,
     k: jax.Array,
 ) -> jax.Array:
-    """Match one energy sample after the caller has supplied a concrete ``k`` array."""
+    """Match one channel-space R-matrix sample to the physical S-matrix.
 
-    return _match_rmatrix(rmatrix, h_plus, h_minus, h_plus_p, h_minus_p, is_open, k)
-
-
-def _project_open_channels(
-    rmatrix: jax.Array,
-    h_plus: jax.Array,
-    h_minus: jax.Array,
-    h_plus_p: jax.Array,
-    h_minus_p: jax.Array,
-    is_open: jax.Array,
-    k: jax.Array,
-) -> tuple[jax.Array, BoundaryValues]:
-    """Project the decoupled R-matrix and boundary values onto the open-channel subspace.
-
-    Closed-channel rows and columns of R are zeroed via an ``is_open`` mask,
-    and the corresponding Hankel function entries are replaced by 1 in
-    ``H_plus`` (to avoid divide-by-zero in the matching formula) and by 0 in
-    ``H_minus``, ``H_plus_p``, and ``H_minus_p``.  The shapes remain
-    ``(N_c, N_c)`` / ``(N_c,)`` so JAX sees static shapes inside JIT.
-
-    Parameters
-    ----------
-    rmatrix
-        Full channel-space R-matrix, shape ``(N_c, N_c)``.
-    h_plus, h_minus, h_plus_p, h_minus_p
-        Boundary value arrays, shape ``(N_c,)``, complex.
-    is_open
-        Boolean mask for open channels, shape ``(N_c,)``.
-    k
-        Wave numbers in fm⁻¹, shape ``(N_c,)``.
-
-    Returns
-    -------
-    tuple[jax.Array, BoundaryValues]
-        Masked R-matrix and masked boundary slice for use in
-        :func:`smatrix_from_R`.
+    Re-wraps the per-energy boundary arrays as a :class:`BoundaryValues`
+    slice and delegates the closed-channel decoupling, open-channel
+    projection, and matching to :func:`lax.spectral.matching.open_channel_smatrix_from_R`.
     """
 
-    mask = is_open.astype(rmatrix.dtype)
-    projected_r = rmatrix * mask[:, None] * mask[None, :]
-    closed_dtype = h_plus.dtype
-    ones: jax.Array = jnp.ones_like(
-        h_plus,
-        dtype=closed_dtype,
-    )
-    mask_complex = is_open.astype(closed_dtype)
-    ones_k: jax.Array = jnp.ones_like(k, dtype=k.dtype)
-    k_values = k * is_open.astype(k.dtype) + ones_k * (1 - is_open.astype(k.dtype))
-
     boundary_slice = BoundaryValues(
-        H_plus=h_plus * mask_complex + ones * (1.0 - mask_complex),
-        H_minus=h_minus * mask_complex,
-        H_plus_p=h_plus_p * mask_complex,
-        H_minus_p=h_minus_p * mask_complex,
+        H_plus=h_plus,
+        H_minus=h_minus,
+        H_plus_p=h_plus_p,
+        H_minus_p=h_minus_p,
         is_open=is_open,
-        k=k_values,
+        k=k,
     )
-    return projected_r, boundary_slice
-
-
-def _closed_channel_bloch(
-    h_plus: jax.Array,
-    h_plus_p: jax.Array,
-    is_open: jax.Array,
-) -> jax.Array:
-    """Return the closed-channel Bloch boundary parameter `B_c = H'_c / H_c`."""
-
-    ratio = h_plus_p / h_plus
-    closed_mask = jnp.logical_not(is_open)
-    zeros: jax.Array = jnp.zeros_like(ratio)
-    return jnp.where(
-        closed_mask,
-        ratio,
-        zeros,
-    )
+    return open_channel_smatrix_from_R(rmatrix, boundary_slice)
 
 
 def _boundary_wave_numbers(boundary: BoundaryValues) -> jax.Array:
@@ -779,14 +673,9 @@ def _boundary_wave_numbers(boundary: BoundaryValues) -> jax.Array:
 
 
 def _uniform_mass_factor(channels: tuple[ChannelSpec, ...]) -> float:
-    """Return the shared mass factor expected by the MVP observables."""
+    """Return the shared mass factor expected by the spectral observables."""
 
-    mass_factor = channels[0].mass_factor
-    for channel in channels[1:]:
-        if channel.mass_factor != mass_factor:
-            msg = "The MVP solver path requires a uniform mass_factor across channels."
-            raise ValueError(msg)
-    return cast(float, mass_factor)
+    return uniform_mass_factor(channels, context="spectral observable path")
 
 
 __all__ = [

@@ -12,8 +12,13 @@ from tests.benchmarks._reference_cases import (
     ALPHA_PB_REFERENCES,
     SingleChannelCollisionReference,
 )
+from tests.conftest import LEGACY_COULOMB_E2
 
 pytest.importorskip("jax")
+
+# Reference S-matrices were prepared with the rounded e² = 1.44; use it library-wide
+# for this module (boundary Sommerfeld parameter) and in the reference potential below.
+pytestmark = pytest.mark.usefixtures("legacy_coulomb_constant")
 
 ALPHA_PB_MASS_FACTOR = 20.736 / (4.0 * 208.0 / (4.0 + 208.0))
 
@@ -25,7 +30,7 @@ def _optical_potential(r: jax.Array, imag_depth: float) -> jax.Array:
     radius = 1.1132 * (208.0 ** (1.0 / 3.0) + 4.0 ** (1.0 / 3.0))
     diffuseness = 0.5803
     woods_saxon = 1.0 / (1.0 + jnp.exp((r - radius) / diffuseness))
-    coulomb = 2.0 * 82.0 * 1.44 / r
+    coulomb = 2.0 * 82.0 * LEGACY_COULOMB_E2 / r
     return -v0 * woods_saxon - 1.0j * imag_depth * woods_saxon + coulomb
 
 
@@ -110,7 +115,7 @@ def test_alpha_pb_optical_matches_published_appendix_a(
     """Published Descouvemont Example 1 collision-matrix values stay visible in the suite."""
 
     solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
-    V = solver.potential(lambda r: _optical_potential(r, imag_depth=10.0))
+    V = solver.local_potential(lambda r: _optical_potential(r, imag_depth=10.0))
     smatrix = _smatrix_from_direct_rmatrix(solver, V)[:, 0, 0]
 
     assert np.allclose(smatrix, reference.collision_matrix, atol=1.0e-4, rtol=1.0e-4)
@@ -122,7 +127,7 @@ def test_alpha_pb_optical_eig_matches_appendix_a() -> None:
 
     reference = ALPHA_PB_REFERENCE_A14_N60_NS1
     solver = _complex_solver(reference, "eig", ("spectrum", "smatrix"))
-    potential = solver.potential(lambda r: _optical_potential(r, imag_depth=10.0))
+    potential = solver.local_potential(lambda r: _optical_potential(r, imag_depth=10.0))
 
     assert solver.spectrum is not None
     assert solver.smatrix is not None
@@ -138,7 +143,7 @@ def test_alpha_pb_optical_direct_matches_appendix_a() -> None:
 
     reference = ALPHA_PB_REFERENCE_A14_N60_NS1
     solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
-    V = solver.potential(lambda r: _optical_potential(r, imag_depth=10.0))
+    V = solver.local_potential(lambda r: _optical_potential(r, imag_depth=10.0))
     smatrix = _smatrix_from_direct_rmatrix(solver, V)[:, 0, 0]
 
     assert np.allclose(smatrix, reference.collision_matrix, atol=1.0e-4, rtol=1.0e-4)
@@ -153,14 +158,16 @@ def test_alpha_pb_optical_method_paths_agree() -> None:
     real_direct_solver = _real_solver(reference, "linear_solve", ("rmatrix_direct",))
     complex_solver = _complex_solver(reference, "eig", ("spectrum", "smatrix"))
     complex_direct_solver = _complex_solver(reference, "linear_solve", ("rmatrix_direct",))
-    real_V_spectral = real_spectrum_solver.potential(
+    real_V_spectral = real_spectrum_solver.local_potential(
         lambda r: jnp.real(_optical_potential(r, imag_depth=0.0))
     )
-    real_V_direct = real_direct_solver.potential(
+    real_V_direct = real_direct_solver.local_potential(
         lambda r: jnp.real(_optical_potential(r, imag_depth=0.0))
     )
-    complex_V_spectral = complex_solver.potential(lambda r: _optical_potential(r, imag_depth=10.0))
-    complex_V_direct = complex_direct_solver.potential(
+    complex_V_spectral = complex_solver.local_potential(
+        lambda r: _optical_potential(r, imag_depth=10.0)
+    )
+    complex_V_direct = complex_direct_solver.local_potential(
         lambda r: _optical_potential(r, imag_depth=10.0)
     )
 

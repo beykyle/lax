@@ -8,7 +8,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 
-from lax.boundary._types import BoundaryValues
+from lax.spectral.types import BoundaryValues
 
 
 @dataclass(frozen=True)
