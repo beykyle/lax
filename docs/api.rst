@@ -99,11 +99,13 @@ directly — they are accessed through :func:`compile` and the :class:`Solver` b
 
 .. autoclass:: lax.boundary.BoundaryValues
 
-.. autoclass:: lax.boundary.Mesh
-
-.. autoclass:: lax.boundary.OperatorMatrices
-
 .. autofunction:: lax.boundary.compute_boundary_values
+
+.. rubric:: lax.types
+
+.. autoclass:: lax.types.Mesh
+
+.. autoclass:: lax.types.OperatorMatrices
 
 .. rubric:: lax.meshes
 

@@ -106,13 +106,6 @@ solver = lax.compile(
 - **Laguerre regularizations:** `x`, `modified_x^2`
 - **Methods:** `eigh`, `eig`, `linear_solve`
 
-Propagation is intentionally narrower than the general API surface:
-
-- propagated meshes are supported **only** for **local potentials** on the direct
-  `linear_solve` path;
-- propagated meshes are not supported for spectrum-derived observables or
-  grid/momentum transforms.
-
 ## Running tests
 
 ```bash
