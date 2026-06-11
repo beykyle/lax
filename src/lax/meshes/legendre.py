@@ -101,11 +101,7 @@ def build_legendre_x(
         TpL=_to_jax_array(TpL) if {"T+L", "TpL"} & operators else None,
         D=_to_jax_array(D) if {"D", "d/dr"} & operators else None,
         inv_r=_diagonal_operator(1.0 / radii) if {"1/r", "inv_r"} & operators else None,
-        inv_r2=(
-            _diagonal_operator(1.0 / (radii**2))
-            if {"1/r^2", "1/r²", "inv_r2"} & operators
-            else None
-        ),
+        inv_r2=_diagonal_operator(1.0 / (radii**2)),
     )
     return mesh, operators_out
 
@@ -182,11 +178,7 @@ def _build_legendre_x_propagated(
     )
     operators_out = OperatorMatrices(
         inv_r=_diagonal_operator(1.0 / np.asarray(radii)) if {"1/r", "inv_r"} & operators else None,
-        inv_r2=(
-            _diagonal_operator(1.0 / (np.asarray(radii) ** 2))
-            if {"1/r^2", "1/r²", "inv_r2"} & operators
-            else None
-        ),
+        inv_r2=_diagonal_operator(1.0 / (np.asarray(radii) ** 2)),
     )
     return mesh, operators_out
 
@@ -267,11 +259,7 @@ def build_legendre_x_one_minus_x(
         T=_to_jax_array(kinetic) if include_kinetic else None,
         TpL=_to_jax_array(kinetic) if include_kinetic else None,
         inv_r=_diagonal_operator(1.0 / radii) if {"1/r", "inv_r"} & operators else None,
-        inv_r2=(
-            _diagonal_operator(1.0 / (radii**2))
-            if {"1/r^2", "1/r²", "inv_r2"} & operators
-            else None
-        ),
+        inv_r2=_diagonal_operator(1.0 / (radii**2)),
     )
     return mesh, operators_out
 
@@ -330,11 +318,7 @@ def build_legendre_x_three_halves(
     operators_out = OperatorMatrices(
         TpL=_to_jax_array(t_plus_l) if include_kinetic else None,
         inv_r=_diagonal_operator(1.0 / radii) if {"1/r", "inv_r"} & operators else None,
-        inv_r2=(
-            _diagonal_operator(1.0 / (radii**2))
-            if {"1/r^2", "1/r²", "inv_r2"} & operators
-            else None
-        ),
+        inv_r2=_diagonal_operator(1.0 / (radii**2)),
     )
     return mesh, operators_out
 

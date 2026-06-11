@@ -11,10 +11,6 @@ containing all JIT-compiled observables.
 
 .. autofunction:: compile
 
-.. autofunction:: assemble_local
-
-.. autofunction:: assemble_nonlocal
-
 .. autofunction:: make_wavefunction_source
 
 .. autoclass:: MeshSpec
@@ -71,7 +67,9 @@ Reusable interaction models and preset system parameters.
 
 .. autofunction:: lax.models.channels_from_rotor_model
 
-.. autofunction:: lax.models.make_rotor_coupled_optical_potential
+.. autofunction:: lax.models.rotor_coupled_optical_potential
+
+.. autofunction:: lax.models.interaction_from_rotor_model
 
 .. autofunction:: lax.models.open_channel_count
 
@@ -87,7 +85,7 @@ Reusable interaction models and preset system parameters.
 
 .. autofunction:: lax.models.reid_np_j1_channels
 
-.. autofunction:: lax.models.reid_np_j1_potential
+.. autofunction:: lax.models.interaction_from_reid_np_j1
 
 .. autofunction:: lax.models.reid_soft_core_triplet_components
 

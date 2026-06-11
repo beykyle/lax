@@ -45,35 +45,40 @@ def _single_channel_solver() -> lm.Solver:
     )
 
 
-def _toy_potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:
-    """Return a smooth two-channel local potential in MeV."""
+def _diagonal_open(radii: jax.Array) -> jax.Array:
+    """Return the open-channel diagonal potential in MeV."""
 
-    diagonal_open = -6.0 * jnp.exp(-((radii / 2.1) ** 2))
-    diagonal_closed = -4.5 * jnp.exp(-((radii / 2.6) ** 2))
-    coupling = -1.25 * jnp.exp(-((radii / 2.3) ** 2))
-
-    if channel_index == coupled_index == 0:
-        return diagonal_open
-    if channel_index == coupled_index == 1:
-        return diagonal_closed
-    return coupling
+    return -6.0 * jnp.exp(-((radii / 2.1) ** 2))
 
 
-def _decoupled_potential(radii: jax.Array, channel_index: int, coupled_index: int) -> jax.Array:
-    """Return the same toy model with the inter-channel coupling removed."""
+def _diagonal_closed(radii: jax.Array) -> jax.Array:
+    """Return the closed-channel diagonal potential in MeV."""
 
-    if channel_index != coupled_index:
-        return jnp.zeros_like(radii)
-    return _toy_potential(radii, channel_index, coupled_index)
+    return -4.5 * jnp.exp(-((radii / 2.6) ** 2))
 
 
-def _open_channel_potential(radii: jax.Array) -> jax.Array:
-    """Return the open-channel diagonal potential used in the decoupled limit."""
+def _channel_coupling(radii: jax.Array) -> jax.Array:
+    """Return the inter-channel coupling potential in MeV."""
 
-    return _toy_potential(radii, 0, 0)
+    return -1.25 * jnp.exp(-((radii / 2.3) ** 2))
 
 
-def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential: jax.Array) -> np.ndarray:
+def _toy_interaction(solver: lm.Solver, *, coupled: bool) -> object:
+    """Build the 2-channel toy Interaction, optionally without the channel coupling."""
+
+    A00 = np.array([[1.0, 0.0], [0.0, 0.0]])
+    A01 = np.array([[0.0, 1.0], [1.0, 0.0]])
+    A11 = np.array([[0.0, 0.0], [0.0, 1.0]])
+    assert solver.potential is not None
+    interaction = solver.potential(_diagonal_open, coupling=A00) + solver.potential(
+        _diagonal_closed, coupling=A11
+    )
+    if coupled:
+        interaction = interaction + solver.potential(_channel_coupling, coupling=A01)
+    return interaction
+
+
+def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential) -> np.ndarray:
     """Evaluate the physical S-matrix from the direct R-matrix kernel."""
 
     assert solver.rmatrix_direct is not None
@@ -118,14 +123,14 @@ def test_coupled_closed_channel_spectral_and_direct_paths_agree() -> None:
 
     spectral_solver = _coupled_solver("eigh", ("spectrum", "smatrix"))
     direct_solver = _coupled_solver("linear_solve", ("rmatrix_direct",))
-    potential = lm.assemble_local(spectral_solver.mesh, _toy_potential, n_channels=2)
-    direct_potential = lm.assemble_local(direct_solver.mesh, _toy_potential, n_channels=2)
+    spectral_V = _toy_interaction(spectral_solver, coupled=True)
+    direct_V = _toy_interaction(direct_solver, coupled=True)
 
     assert spectral_solver.spectrum is not None
     assert spectral_solver.smatrix is not None
 
-    spectral_smatrix = np.asarray(spectral_solver.smatrix(spectral_solver.spectrum(potential)))
-    direct_smatrix = _smatrix_from_direct_rmatrix(direct_solver, direct_potential)
+    spectral_smatrix = np.asarray(spectral_solver.smatrix(spectral_solver.spectrum(spectral_V)))
+    direct_smatrix = _smatrix_from_direct_rmatrix(direct_solver, direct_V)
     below_threshold = ENERGIES < CHANNEL_THRESHOLD
     above_threshold = np.logical_not(below_threshold)
 
@@ -143,20 +148,18 @@ def test_coupled_closed_channel_decoupled_limit_matches_single_channel() -> None
 
     coupled_solver = _coupled_solver("eigh", ("spectrum", "smatrix"))
     single_channel_solver = _single_channel_solver()
-    coupled_potential = lm.assemble_local(coupled_solver.mesh, _decoupled_potential, n_channels=2)
-    single_channel_potential = lm.assemble_local(
-        single_channel_solver.mesh,
-        _open_channel_potential,
-    )
+    coupled_V = _toy_interaction(coupled_solver, coupled=False)
+    assert single_channel_solver.potential is not None
+    single_channel_V = single_channel_solver.potential(_diagonal_open)
 
     assert coupled_solver.spectrum is not None
     assert coupled_solver.smatrix is not None
     assert single_channel_solver.spectrum is not None
     assert single_channel_solver.smatrix is not None
 
-    coupled_smatrix = np.asarray(coupled_solver.smatrix(coupled_solver.spectrum(coupled_potential)))
+    coupled_smatrix = np.asarray(coupled_solver.smatrix(coupled_solver.spectrum(coupled_V)))
     single_channel_smatrix = np.asarray(
-        single_channel_solver.smatrix(single_channel_solver.spectrum(single_channel_potential))
+        single_channel_solver.smatrix(single_channel_solver.spectrum(single_channel_V))
     )
 
     assert np.allclose(

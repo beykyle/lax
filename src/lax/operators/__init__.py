@@ -1,5 +1,13 @@
 """Operator assembly helpers."""
 
-from lax.operators.potential import assemble_local, assemble_nonlocal
+from lax.operators.interaction import (
+    make_interaction_from_array,
+    make_interaction_from_block,
+    make_interaction_from_funcs,
+)
 
-__all__ = ["assemble_local", "assemble_nonlocal"]
+__all__ = [
+    "make_interaction_from_array",
+    "make_interaction_from_block",
+    "make_interaction_from_funcs",
+]

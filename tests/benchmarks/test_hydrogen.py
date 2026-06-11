@@ -39,12 +39,6 @@ def _hydrogen_solver(
     )
 
 
-def _hydrogen_potential(solver: Solver) -> jax.Array:
-    """Return the Coulomb potential for one compiled hydrogen solver."""
-
-    return jnp.asarray((-1.0 / solver.mesh.radii)[None, None, :])
-
-
 def _hydrogen_radial_wavefunction(n: int, angular_momentum: int, radii: np.ndarray) -> np.ndarray:
     """Return the normalized internal hydrogen radial wavefunction `u_{nl}(r)`."""
 
@@ -124,7 +118,8 @@ def test_hydrogen_ground_state_laguerre_x() -> None:
     solver = _hydrogen_solver(0)
 
     assert solver.spectrum is not None
-    spectrum = solver.spectrum(_hydrogen_potential(solver))
+    assert solver.potential is not None
+    spectrum = solver.spectrum(solver.potential(lambda r: -1.0 / r))
     ground_state = float(np.asarray(spectrum.eigenvalues)[0]) * solver.channels[0].mass_factor
 
     assert abs(ground_state + 0.5) < 1.0e-10
@@ -147,7 +142,8 @@ def test_hydrogen_bound_state_energies(
     solver = _hydrogen_solver(angular_momentum)
 
     assert solver.spectrum is not None
-    spectrum = solver.spectrum(_hydrogen_potential(solver))
+    assert solver.potential is not None
+    spectrum = solver.spectrum(solver.potential(lambda r: -1.0 / r))
     physical_energies = np.asarray(spectrum.eigenvalues) * solver.channels[0].mass_factor
     expected = np.asarray([-0.5 / (n**2) for n in principal_quantum_numbers], dtype=np.float64)
 
@@ -181,7 +177,8 @@ def test_hydrogen_wavefunctions_match_analytic_radial_forms(
     assert solver.to_grid_vector is not None
     assert solver.transforms.grid_r is not None
 
-    spectrum = solver.spectrum(_hydrogen_potential(solver))
+    assert solver.potential is not None
+    spectrum = solver.spectrum(solver.potential(lambda r: -1.0 / r))
     assert spectrum.eigenvectors is not None
 
     eigenvector = np.asarray(spectrum.eigenvectors)[:, state_index]
@@ -220,7 +217,8 @@ def test_hydrogen_wavefunctions_match_analytic_momentum_forms(
     assert solver.fourier is not None
     assert solver.transforms.momenta is not None
 
-    spectrum = solver.spectrum(_hydrogen_potential(solver))
+    assert solver.potential is not None
+    spectrum = solver.spectrum(solver.potential(lambda r: -1.0 / r))
     assert spectrum.eigenvectors is not None
 
     eigenvector = np.asarray(spectrum.eigenvectors)[:, state_index]
@@ -257,7 +255,8 @@ def test_hydrogen_momentum_norm_matches_current_fourier_convention() -> None:
     assert solver.transforms.grid_r is not None
     assert solver.transforms.momenta is not None
 
-    spectrum = solver.spectrum(_hydrogen_potential(solver))
+    assert solver.potential is not None
+    spectrum = solver.spectrum(solver.potential(lambda r: -1.0 / r))
     assert spectrum.eigenvectors is not None
 
     eigenvector = jnp.asarray(np.asarray(spectrum.eigenvectors)[:, 0])

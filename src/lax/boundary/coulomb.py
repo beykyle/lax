@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
-import jax
 import jax.numpy as jnp
 import mpmath as mp
 import numpy as np
@@ -53,10 +53,11 @@ def compute_boundary_values(
         ``mpmath`` decimal precision.  The default of 40 provides ample
         guard digits against cancellation near resonances.
     mass_factor_grid
-        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``.  When
-        provided, overrides ``channel.mass_factor`` in the wave-number and
-        Sommerfeld-parameter computation at each energy.  Pass ``None`` to
-        use the scalar ``ChannelSpec.mass_factor`` uniformly.
+        Per-energy, per-channel ℏ²/2μ values in MeV·fm², shape
+        ``(N_E, N_c)``.  When provided, ``mass_factor_grid[ie, ic]``
+        overrides ``channels[ic].mass_factor`` in the wave-number and
+        Sommerfeld-parameter computation for energy index ``ie``.  Pass
+        ``None`` to use the scalar ``ChannelSpec.mass_factor`` uniformly.
 
     Returns
     -------
@@ -79,9 +80,9 @@ def compute_boundary_values(
 
     for energy_index, energy in enumerate(energies):
         for channel_index, channel in enumerate(channels):
-            # Use per-energy mass_factor when provided; fall back to ChannelSpec value.
+            # Use per-energy, per-channel mass_factor when provided.
             effective_mass_factor = (
-                float(mass_factor_grid[energy_index])
+                float(mass_factor_grid[energy_index, channel_index])
                 if mass_factor_grid is not None
                 else channel.mass_factor
             )
@@ -127,12 +128,12 @@ def compute_boundary_values(
                 )
 
     return BoundaryValues(
-        H_plus=_to_jax_array(H_plus),
-        H_minus=_to_jax_array(H_minus),
-        H_plus_p=_to_jax_array(H_plus_p),
-        H_minus_p=_to_jax_array(H_minus_p),
-        is_open=_to_jax_array(is_open),
-        k=_to_jax_array(k_values),
+        H_plus=jnp.asarray(H_plus),
+        H_minus=jnp.asarray(H_minus),
+        H_plus_p=jnp.asarray(H_plus_p),
+        H_minus_p=jnp.asarray(H_minus_p),
+        is_open=jnp.asarray(is_open),
+        k=jnp.asarray(k_values),
     )
 
 
@@ -152,9 +153,10 @@ def _fill_open_channel(
 ) -> None:
     """Fill one open-channel boundary-value entry."""
 
-    k = np.sqrt(relative_energy / channel.mass_factor)
+    mf = cast(float, channel.mass_factor)
+    k = np.sqrt(relative_energy / mf)
     rho = k * channel_radius
-    eta = _sommerfeld(z1z2, k, channel.mass_factor) if z1z2 is not None else 0.0
+    eta = _sommerfeld(z1z2, k, mf) if z1z2 is not None else 0.0
 
     def coulombf_at_rho(rho_value: float) -> object:
         return _mp_coulombf(channel.l, eta, rho_value)
@@ -193,9 +195,10 @@ def _fill_closed_channel(
 ) -> None:
     """Fill one closed-channel boundary-value entry."""
 
-    k = np.sqrt(-relative_energy / channel.mass_factor)
+    mf = cast(float, channel.mass_factor)
+    k = np.sqrt(-relative_energy / mf)
     rho = 2.0 * k * channel_radius
-    eta = _sommerfeld(z1z2, k, channel.mass_factor) if z1z2 is not None else 0.0
+    eta = _sommerfeld(z1z2, k, mf) if z1z2 is not None else 0.0
 
     def whitw_at_rho(rho_value: float) -> object:
         return _mp_whittaker_w(-eta, channel.l + 0.5, rho_value)
@@ -291,13 +294,6 @@ def _neutral_open_channel_values(l: int, rho: float) -> tuple[complex, complex, 
     dF = complex(sc.spherical_jn(l, rho) + rho * sc.spherical_jn(l, rho, derivative=True))
     dG = complex(-sc.spherical_yn(l, rho) - rho * sc.spherical_yn(l, rho, derivative=True))
     return F, G, dF, dG
-
-
-def _to_jax_array(values: np.ndarray) -> jax.Array:
-    """Convert compile-time NumPy arrays to runtime JAX arrays."""
-
-    array: jax.Array = jnp.asarray(values)
-    return array
 
 
 __all__ = ["compute_boundary_values"]

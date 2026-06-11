@@ -63,10 +63,7 @@ def smatrix_from_R(R: jax.Array, boundary_at_energy: BoundaryValues) -> jax.Arra
     H_minus = jnp.diag(boundary_at_energy.H_minus)
     H_plus_p = jnp.diag(boundary_at_energy.H_plus_p)
     H_minus_p = jnp.diag(boundary_at_energy.H_minus_p)
-    if boundary_at_energy.k is None:
-        k = jnp.ones(R.shape[0], dtype=R.dtype)
-    else:
-        k = boundary_at_energy.k.astype(R.dtype)
+    k = boundary_at_energy.k.astype(R.dtype)
     sqrt_k = jnp.sqrt(k)
     K = jnp.diag(sqrt_k)
     Kinv = jnp.diag(1.0 / sqrt_k)
@@ -239,7 +236,7 @@ def _project_open_channels(
     h_plus_p: jax.Array,
     h_minus_p: jax.Array,
     is_open: jax.Array,
-    k: jax.Array | None,
+    k: jax.Array,
 ) -> tuple[jax.Array, BoundaryValues]:
     """Project a full-channel system onto the open-channel matching problem."""
 
@@ -251,11 +248,8 @@ def _project_open_channels(
         dtype=closed_dtype,
     )
     mask_complex = is_open.astype(closed_dtype)
-    if k is None:
-        k_values = None
-    else:
-        ones_k: jax.Array = jnp.ones_like(k, dtype=k.dtype)
-        k_values = k * is_open.astype(k.dtype) + ones_k * (1 - is_open.astype(k.dtype))
+    ones_k: jax.Array = jnp.ones_like(k, dtype=k.dtype)
+    k_values = k * is_open.astype(k.dtype) + ones_k * (1 - is_open.astype(k.dtype))
 
     boundary_slice = BoundaryValues(
         H_plus=h_plus * mask_complex + ones * (1.0 - mask_complex),

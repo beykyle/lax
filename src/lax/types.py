@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+import jax
+
 type MeshFamily = Literal["legendre", "laguerre"]
 type Regularization = Literal[
     "x",
@@ -13,11 +15,6 @@ type Regularization = Literal[
     "modified_x^2",
 ]
 type Method = Literal["eigh", "eig", "linear_solve"]
-
-# Backward-compatible aliases for internal signatures and existing sketches.
-type MeshFamilyT = MeshFamily
-type RegularizationT = Regularization
-type MethodT = Method
 
 
 def _empty_extras() -> dict[str, object]:
@@ -81,16 +78,53 @@ class ChannelSpec:
 
     l: int
     threshold: float
-    mass_factor: float
+    mass_factor: float | jax.Array
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class Interaction:
+    """Assembled coupled-channel potential block in MeV.
+
+    block : (M, M) or (N_E, M, M)  where M = N_c·N
+        Local terms on the per-channel diagonal, non-local terms as full
+        Gauss-scaled blocks. Symmetric. Mass-independent — per-channel mass
+        factors are applied by the solver, never folded into this block.
+        Excludes kinetic, centrifugal, threshold, and energy terms.
+    energy_dependent : bool (static)
+        True iff ``block`` has a leading (N_E,) axis aligned with the
+        compile-time energy grid.
+    """
+
+    block: jax.Array
+    energy_dependent: bool = field(metadata={"static": True})
+
+    def __add__(self, other: object) -> Interaction:
+        """Combine two Interaction blocks by summing their potential contributions.
+
+        Energy-independent + energy-independent → energy-independent.
+        Any combination involving an energy-dependent term → energy-dependent,
+        broadcasting ``(M, M)`` to ``(1, M, M)`` before adding.
+        """
+        if not isinstance(other, Interaction):
+            return NotImplemented
+        if not self.energy_dependent and not other.energy_dependent:
+            return Interaction(block=self.block + other.block, energy_dependent=False)
+        b1 = self.block if self.energy_dependent else self.block[None]
+        b2 = other.block if other.energy_dependent else other.block[None]
+        return Interaction(block=b1 + b2, energy_dependent=True)
+
+    def __radd__(self, other: object) -> Interaction:
+        if other == 0:
+            return self
+        return NotImplemented
 
 
 __all__ = [
     "ChannelSpec",
+    "Interaction",
     "MeshFamily",
-    "MeshFamilyT",
     "MeshSpec",
     "Method",
-    "MethodT",
     "Regularization",
-    "RegularizationT",
 ]

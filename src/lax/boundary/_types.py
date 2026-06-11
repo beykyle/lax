@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import jax
 
-from lax.types import ChannelSpec, MeshFamily, Method, Regularization
+from lax.types import ChannelSpec, Interaction, MeshFamily, Method, Regularization
 
 if TYPE_CHECKING:
     from lax.spectral.types import Spectrum
@@ -21,24 +21,16 @@ class SpectrumKernel(Protocol):
 
     def __call__(
         self,
-        potential: jax.Array,
-        mass_factor: float | jax.Array | None = None,
+        potential: jax.Array | Interaction,
     ) -> Spectrum:
         """Return the spectral decomposition for one assembled potential.
 
         Parameters
         ----------
         potential
-            Assembled potential array, shape ``(N_c, N_c, N)`` for local or
-            ``(N_c, N_c, N, N)`` for non-local.
-        mass_factor
-            Optional per-energy ℏ²/2μ in MeV·fm².  When provided, overrides
-            ``ChannelSpec.mass_factor`` so the Hamiltonian uses ``V/μ(E)`` and
-            ``threshold/μ(E)`` at each energy.  Typical usage::
-
-                spectra = jax.vmap(
-                    lambda V, mu: solver.spectrum(V, mass_factor=mu)
-                )(V_grid, mu_grid)
+            Assembled potential: either a raw ``jax.Array`` of shape
+            ``(N_c, N_c, N)`` for local or ``(N_c, N_c, N, N)`` for non-local,
+            or an :class:`~lax.Interaction` (energy-independent only).
 
         Returns
         -------
@@ -186,18 +178,86 @@ class EigenpairAccessor(Protocol):
 class DirectRMatrixKernel(Protocol):
     """Callable that computes the direct R-matrix via per-energy linear solves."""
 
-    def __call__(self, potential: jax.Array) -> jax.Array:
+    def __call__(self, potential: jax.Array | Interaction) -> jax.Array:
         """Evaluate the direct R-matrix on the compile-time energy grid.
 
         Parameters
         ----------
         potential
-            Local potential array, shape ``(N_c, N_c, N)``.
+            Assembled potential array, shape ``(N_c, N_c, N)`` / ``(N_c, N_c, N, N)``
+            for energy-independent V, or an :class:`~lax.Interaction` object
+            (dispatch is handled transparently at the Python level).
 
         Returns
         -------
         jax.Array
             R-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``.
+        """
+        ...
+
+
+class SMatrixDirectObservable(Protocol):
+    """Callable that computes the direct S-matrix via per-energy linear solves."""
+
+    def __call__(self, potential: jax.Array | Interaction) -> jax.Array:
+        """Evaluate the S-matrix on the compile-time energy grid.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential or :class:`~lax.Interaction`.
+
+        Returns
+        -------
+        jax.Array
+            S-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``, complex.
+        """
+        ...
+
+
+class PhasesDirectObservable(Protocol):
+    """Callable that computes direct phase shifts via per-energy linear solves."""
+
+    def __call__(self, potential: jax.Array | Interaction) -> jax.Array:
+        """Evaluate phase shifts on the compile-time energy grid.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential or :class:`~lax.Interaction`.
+
+        Returns
+        -------
+        jax.Array
+            Phase shifts, shape ``(N_E, N_c)``, in radians.
+        """
+        ...
+
+
+class WavefunctionDirectObservable(Protocol):
+    """Callable that reconstructs the wavefunction via a direct linear solve."""
+
+    def __call__(
+        self,
+        potential: jax.Array | Interaction,
+        source: jax.Array,
+        energy_index: int,
+    ) -> jax.Array:
+        """Solve ``C(E_i) ψ = source`` for the internal wavefunction.
+
+        Parameters
+        ----------
+        potential
+            Assembled potential or :class:`~lax.Interaction`.
+        source
+            Mesh-space driving term, shape ``(N_c·N,)``.
+        energy_index
+            Index into the compile-time energy grid (Python int).
+
+        Returns
+        -------
+        jax.Array
+            Internal wavefunction coefficient vector, shape ``(N_c·N,)``.
         """
         ...
 
@@ -540,8 +600,7 @@ class BoundaryValues:
         Boolean mask: ``True`` for open channels (``E > E_threshold``),
         shape ``(N_E, N_c)``.
     k
-        Channel wave numbers ``k_c(E)`` in fm⁻¹, shape ``(N_E, N_c)``,
-        or ``None`` when not needed for matching.
+        Channel wave numbers ``k_c(E)`` in fm⁻¹, shape ``(N_E, N_c)``.
     """
 
     H_plus: jax.Array
@@ -549,7 +608,7 @@ class BoundaryValues:
     H_plus_p: jax.Array
     H_minus_p: jax.Array
     is_open: jax.Array
-    k: jax.Array | None = None
+    k: jax.Array
 
 
 @jax.tree_util.register_dataclass
@@ -642,12 +701,6 @@ class Solver:
 
     rmatrix_direct
         ``(V) → R`` — per-energy linear-solve R-matrix on the compile-time grid.
-    rmatrix_direct_grid
-        ``(V_grid) → R`` — aligned-grid direct R for energy-dependent V.
-    smatrix_direct_grid
-        ``(V_grid) → S`` — aligned-grid direct S.
-    phases_direct_grid
-        ``(V_grid) → δ`` — aligned-grid direct phases.
 
     **Padé interpolation builders** (present whenever ``energies`` was supplied):
 
@@ -690,9 +743,13 @@ class Solver:
     smatrix_grid: SpectrumGridObservable | None = None
     phases_grid: SpectrumGridObservable | None = None
     rmatrix_direct: DirectRMatrixKernel | None = None
-    rmatrix_direct_grid: DirectGridObservable | None = None
-    smatrix_direct_grid: DirectGridObservable | None = None
-    phases_direct_grid: DirectGridObservable | None = None
+    smatrix_direct: SMatrixDirectObservable | None = None
+    phases_direct: PhasesDirectObservable | None = None
+    wavefunction_direct: WavefunctionDirectObservable | None = None
+    interaction_from_block: Callable[..., Any] | None = None
+    interaction_from_array: Callable[..., Any] | None = None
+    interaction_from_funcs: Callable[..., Any] | None = None
+    potential: Callable[..., Any] | None = None
     interpolate_rmatrix: InterpolatorBuilder | None = None
     interpolate_smatrix: InterpolatorBuilder | None = None
     interpolate_phases: InterpolatorBuilder | None = None
@@ -732,6 +789,9 @@ class Solver:
             "smatrix_grid",
             "phases_grid",
             "rmatrix_direct",
+            "smatrix_direct",
+            "phases_direct",
+            "wavefunction_direct",
         )
         _transform_names = (
             "to_grid_vector",
@@ -774,5 +834,8 @@ __all__ = [
     "SpectrumKernel",
     "SpectrumObservable",
     "TransformMatrices",
+    "PhasesDirectObservable",
+    "SMatrixDirectObservable",
+    "WavefunctionDirectObservable",
     "WavefunctionObservable",
 ]

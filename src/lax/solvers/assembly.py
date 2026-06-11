@@ -14,17 +14,17 @@ def assemble_block_hamiltonian(
     operators: OperatorMatrices,
     channels: tuple[ChannelSpec, ...],
     potential: jax.Array,
-    mass_factor_override: float | jax.Array | None = None,
 ) -> jax.Array:
-    """Assemble the Bloch-augmented block Hamiltonian in fm⁻² units.
+    """Assemble the Bloch-augmented block Hamiltonian in MeV units.
 
     Builds the ``(N_c·N, N_c·N)`` matrix whose eigendecomposition drives
-    all spectral observables.  Diagonal blocks contain ``T+L``, the
-    centrifugal term, the channel threshold, and the diagonal potential;
-    off-diagonal blocks contain the coupling potential.  [DESIGN.md §11.5]
+    all spectral observables.  Diagonal blocks contain
+    ``m_c·(T+L) + E_c·I``; off-diagonal blocks contain the coupling
+    potential.  [DESIGN.md §11.5]
 
-    All quantities are converted from MeV to fm⁻² by dividing by
-    ``channel.mass_factor`` (ℏ²/2μ in MeV·fm²).
+    Each channel's kinetic block is scaled by ``m_c`` (ℏ²/2μ in MeV·fm²)
+    so that the assembled matrix is in MeV throughout.  The potential ``V``
+    is added without rescaling — it must already be in MeV.
 
     Parameters
     ----------
@@ -34,38 +34,30 @@ def assemble_block_hamiltonian(
         Precomputed operator matrices; ``TpL`` must be present.
     channels
         Channel definitions (``l``, ``threshold``, ``mass_factor``).
+        For energy-dependent μ, pass channels whose ``mass_factor`` fields
+        carry the per-energy values (e.g. a vmapped slice of
+        ``mass_factor_grid``).
     potential
         Assembled potential in MeV.  Shape ``(N_c, N_c, N)`` for local
         or ``(N_c, N_c, N, N)`` for non-local.
-    mass_factor_override
-        When not ``None``, overrides ``channel.mass_factor`` for every
-        channel block.  Supply a scalar JAX float when using an
-        energy-dependent μ(E) — the value is traced and vmapped normally.
-        All channels are assumed to share the same reduced mass.
 
     Returns
     -------
     jax.Array
-        Block Hamiltonian, shape ``(N_c·N, N_c·N)``, in fm⁻².
+        Block Hamiltonian, shape ``(N_c·N, N_c·N)``, in MeV.
     """
 
     channel_count = len(channels)
     basis_size = mesh.n
     t_plus_l = _require_operator(operators.TpL, "TpL")
-    inv_r2 = operators.inv_r2
-    if inv_r2 is None:
-        inv_r2 = _diagonal_from_vector(1.0 / (mesh.radii**2))
+    inv_r2 = _require_operator(operators.inv_r2, "inv_r2")
 
     blocks: list[jax.Array] = []
     for channel_index in range(channel_count):
         row_blocks: list[jax.Array] = []
-        mass_factor: float | jax.Array = (
-            mass_factor_override
-            if mass_factor_override is not None
-            else channels[channel_index].mass_factor
-        )
+        m_c = channels[channel_index].mass_factor
         angular_momentum = channels[channel_index].l
-        threshold = channels[channel_index].threshold / mass_factor
+        threshold = channels[channel_index].threshold
         for coupled_index in range(channel_count):
             block: jax.Array = jnp.zeros(
                 (basis_size, basis_size),
@@ -74,8 +66,7 @@ def assemble_block_hamiltonian(
             if channel_index == coupled_index:
                 block = (
                     block
-                    + t_plus_l
-                    + angular_momentum * (angular_momentum + 1) * inv_r2
+                    + m_c * (t_plus_l + angular_momentum * (angular_momentum + 1) * inv_r2)
                     + threshold
                     * jnp.eye(
                         basis_size,
@@ -83,12 +74,15 @@ def assemble_block_hamiltonian(
                     )
                 )
             if potential.ndim == 3:
-                block = (
-                    block
-                    + _diagonal_from_vector(potential[channel_index, coupled_index]) / mass_factor
-                )
+                block = block + _diagonal_from_vector(potential[channel_index, coupled_index])
+            elif potential.ndim == 2:
+                # Pre-assembled (M, M) block (e.g. from Interaction.block): extract sub-block
+                # by slicing rather than channel indexing.
+                rs = channel_index * basis_size
+                cs = coupled_index * basis_size
+                block = block + potential[rs : rs + basis_size, cs : cs + basis_size]
             else:
-                block = block + potential[channel_index, coupled_index] / mass_factor
+                block = block + potential[channel_index, coupled_index]
             row_blocks.append(block)
         blocks.append(jnp.concatenate(row_blocks, axis=1))
     matrix: jax.Array = jnp.concatenate(blocks, axis=0)

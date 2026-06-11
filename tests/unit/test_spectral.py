@@ -6,7 +6,7 @@ import pytest
 
 import lax as lm
 from lax.boundary._types import BoundaryValues
-from lax.models import reid_np_j1_channels, reid_np_j1_potential
+from lax.models import interaction_from_reid_np_j1, reid_np_j1_channels
 from lax.spectral import (
     Spectrum,
     coupled_channel_parameters_from_S,
@@ -119,6 +119,7 @@ def test_smatrix_from_R_is_unitary_for_real_r() -> None:
         H_plus_p=jnp.asarray([0.3 + 0.2j]),
         H_minus_p=jnp.asarray([0.3 - 0.2j]),
         is_open=jnp.asarray([True]),
+        k=jnp.ones(1),
     )
 
     S = np.asarray(smatrix_from_R(R, boundary))
@@ -138,11 +139,11 @@ def test_smatrix_from_R_is_symmetric_and_unitary_for_real_two_channel_r() -> Non
         solvers=("spectrum", "rmatrix"),
         energies=energy,
     )
-    potential = lm.assemble_local(solver.mesh, reid_np_j1_potential, n_channels=2)
     assert solver.spectrum is not None
     assert solver.rmatrix is not None
     assert solver.boundary is not None
 
+    potential = interaction_from_reid_np_j1(solver)
     spectrum = solver.spectrum(potential)
     R = solver.rmatrix(spectrum, float(energy[0]))
     boundary = BoundaryValues(
@@ -151,6 +152,7 @@ def test_smatrix_from_R_is_symmetric_and_unitary_for_real_two_channel_r() -> Non
         H_plus_p=solver.boundary.H_plus_p[0],
         H_minus_p=solver.boundary.H_minus_p[0],
         is_open=solver.boundary.is_open[0],
+        k=solver.boundary.k[0],
     )
     S = np.asarray(smatrix_from_R(R, boundary))
 

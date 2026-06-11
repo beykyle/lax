@@ -213,10 +213,9 @@ def test_constant_mass_factor_grid_reproduces_scalar_result() -> None:
     scalar_spectra = jax.vmap(scalar_solver.spectrum)(potentials)
     scalar_phases = scalar_solver.phases_grid(scalar_spectra)
 
-    # Grid path: spectrum uses mass_factor=mu_i (constant, same value)
-    grid_spectra = jax.vmap(lambda V, mu: grid_solver.spectrum(V, mass_factor=mu))(
-        potentials, mu_grid
-    )
+    # Grid path: mass factor is baked in at compile time; spectrum uses ChannelSpec.mass_factor
+    # (which equals mu_scalar), and phases_grid uses the constant mass_factor_grid boundary.
+    grid_spectra = jax.vmap(grid_solver.spectrum)(potentials)
     grid_phases = grid_solver.phases_grid(grid_spectra)
 
     assert np.allclose(
@@ -262,11 +261,13 @@ def test_varying_mass_factor_grid_changes_phases() -> None:
     const_spectra = jax.vmap(const_solver.spectrum)(potentials)
     const_phases = const_solver.phases_grid(const_spectra)
 
-    mu_spectra = jax.vmap(lambda V, mu: mu_solver.spectrum(V, mass_factor=mu))(potentials, mu_grid)
+    # Mass factors are baked at compile time; spectrum always uses ChannelSpec.mass_factor.
+    # The energy-dependent mu enters through the compiled boundary values (k_c, η_c) in
+    # phases_grid, so mu_phases differ from const_phases even though the spectra agree.
+    mu_spectra = jax.vmap(mu_solver.spectrum)(potentials)
     mu_phases = mu_solver.phases_grid(mu_spectra)
 
-    # Phases must differ — the energy-dependent mu changes both the Hamiltonian
-    # (threshold/mu, V/mu terms) and the spectral denominator (E/mu).
+    # Phases must differ — the energy-dependent mu changes the boundary matching (k_c, η_c).
     assert not np.allclose(np.asarray(const_phases), np.asarray(mu_phases), atol=1e-6), (
         "Varying mu(E) should produce different phases from constant mu"
     )

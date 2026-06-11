@@ -11,7 +11,7 @@ import numpy as np
 
 from lax.boundary._types import Mesh, OperatorMatrices, SpectrumKernel
 from lax.spectral.types import Spectrum
-from lax.types import ChannelSpec, Method
+from lax.types import ChannelSpec, Interaction, Method
 
 from .assembly import assemble_block_hamiltonian, build_Q
 
@@ -29,31 +29,32 @@ class _SpectrumKernel:
 
     def __call__(
         self,
-        potential: jax.Array,
-        mass_factor: float | jax.Array | None = None,
+        potential: jax.Array | Interaction,
     ) -> Spectrum:
         """Return the spectral decomposition for one assembled potential.
 
         Parameters
         ----------
         potential
-            Assembled potential array, shape ``(N_c, N_c, N)`` for local or
-            ``(N_c, N_c, N, N)`` for non-local.
-        mass_factor
-            Optional energy-dependent ℏ²/2μ value in MeV·fm².  When provided,
-            overrides ``ChannelSpec.mass_factor`` in the Hamiltonian assembly so
-            that ``threshold/μ(E)`` and ``V/μ(E)`` use the correct per-energy
-            value.  Typical usage::
+            :class:`~lax.Interaction` object built by ``solver.potential()`` or
+            ``solver.interaction_from_{block,array,funcs}()``.  Must have
+            ``energy_dependent=False`` (one eigendecomposition per potential).
+            For energy-dependent workflows, vmap over per-energy blocks::
 
-                spectra = jax.vmap(
-                    lambda V, mu: solver.spectrum(V, mass_factor=mu)
-                )(V_grid, mu_grid)
+                jax.vmap(solver.spectrum)(interaction_list)
 
         Returns
         -------
         Spectrum
             Eigendecomposition of the Bloch-augmented Hamiltonian.
         """
+        if isinstance(potential, Interaction):
+            if potential.energy_dependent:
+                raise TypeError(
+                    "spectrum() does not accept energy-dependent Interactions directly. "
+                    "Vmap over per-energy blocks: jax.vmap(solver.spectrum)(interaction.block)."
+                )
+            potential = potential.block
 
         if self.method == "eigh":
             return cast(
@@ -65,7 +66,6 @@ class _SpectrumKernel:
                     self.channels,
                     self.q,
                     self.keep_eigenvectors,
-                    mass_factor,
                 ),
             )
         if self.method == "eig":
@@ -78,7 +78,6 @@ class _SpectrumKernel:
                     self.channels,
                     self.q,
                     self.keep_eigenvectors,
-                    mass_factor,
                 ),
             )
         msg = f"Method {self.method!r} is not implemented in the MVP spectrum kernel."
@@ -140,13 +139,12 @@ def _spectrum_eigh(
     channels: tuple[ChannelSpec, ...],
     q: jax.Array,
     keep_eigenvectors: bool,
-    mass_factor_override: float | jax.Array | None,
 ) -> Spectrum:
     """Return the Hermitian spectrum for one potential."""
 
-    hamiltonian = assemble_block_hamiltonian(
-        mesh, operators, channels, potential, mass_factor_override
-    )
+    H_MeV = assemble_block_hamiltonian(mesh, operators, channels, potential)
+    m0 = channels[0].mass_factor
+    hamiltonian = H_MeV / m0
     eigensystem = cast(
         tuple[jax.Array, jax.Array],
         jnp.linalg.eigh(hamiltonian),
@@ -168,13 +166,12 @@ def _spectrum_eig(
     channels: tuple[ChannelSpec, ...],
     q: jax.Array,
     keep_eigenvectors: bool,
-    mass_factor_override: float | jax.Array | None,
 ) -> Spectrum:
     """Return the complex-symmetric spectrum for one potential."""
 
-    hamiltonian = assemble_block_hamiltonian(
-        mesh, operators, channels, potential, mass_factor_override
-    )
+    H_MeV = assemble_block_hamiltonian(mesh, operators, channels, potential)
+    m0 = channels[0].mass_factor
+    hamiltonian = H_MeV / m0
     eigenvalues, eigenvectors = _eig_via_callback(hamiltonian)
     bilinear_norm = jnp.sqrt(jnp.diag(eigenvectors.T @ eigenvectors))
     eigenvectors_normalized = eigenvectors / bilinear_norm[None, :]

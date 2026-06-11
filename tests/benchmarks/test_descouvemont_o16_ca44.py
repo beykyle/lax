@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import jax
 import numpy as np
 import pytest
 
@@ -10,7 +9,7 @@ from lax.models import (
     O16_CA44_ROTOR_MODEL,
     channels_from_rotor_model,
     first_column_amplitudes_and_phases,
-    make_rotor_coupled_optical_potential,
+    interaction_from_rotor_model,
     open_channel_count,
 )
 from tests.benchmarks._descouvemont_fixtures import (
@@ -43,7 +42,7 @@ def _solver(reference: CoupledColumnReference, method: str, solvers: tuple[str, 
 
 
 def _smatrix_from_direct_rmatrix(
-    solver: lm.Solver, potential: jax.Array
+    solver: lm.Solver, potential
 ) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:
     """Evaluate the physical open-channel S-matrices from the direct R-matrix kernel."""
 
@@ -68,14 +67,13 @@ def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
     """Return the boundary-value slice for one compile-time energy."""
 
     assert solver.boundary is not None
-    k_values = None if solver.boundary.k is None else solver.boundary.k[energy_index]
     return BoundaryValues(
         H_plus=solver.boundary.H_plus[energy_index],
         H_minus=solver.boundary.H_minus[energy_index],
         H_plus_p=solver.boundary.H_plus_p[energy_index],
         H_minus_p=solver.boundary.H_minus_p[energy_index],
         is_open=solver.boundary.is_open[energy_index],
-        k=k_values,
+        k=solver.boundary.k[energy_index],
     )
 
 
@@ -88,14 +86,9 @@ def _boundary_at_energy(solver: lm.Solver, energy_index: int) -> BoundaryValues:
 def test_descouvemont_o16_ca44_matches_published_output(reference: CoupledColumnReference) -> None:
     """Published Descouvemont Example 3 values remain visible in the suite."""
 
-    potential = make_rotor_coupled_optical_potential(O16_CA44_ROTOR_MODEL)
     solver = _solver(reference, "linear_solve", ("rmatrix_direct",))
-    assembled_potential = lm.assemble_local(
-        solver.mesh,
-        potential,
-        n_channels=len(channels_from_rotor_model(O16_CA44_ROTOR_MODEL)),
-    )
-    smatrices, projected_boundaries = _smatrix_from_direct_rmatrix(solver, assembled_potential)
+    interaction = interaction_from_rotor_model(O16_CA44_ROTOR_MODEL, solver)
+    smatrices, projected_boundaries = _smatrix_from_direct_rmatrix(solver, interaction)
 
     for energy_index, energy in enumerate(reference.energies):
         open_count = open_channel_count(O16_CA44_ROTOR_MODEL, float(energy))

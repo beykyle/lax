@@ -8,8 +8,9 @@ boundary data, binds pickle-safe runtime callables, and returns the final
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -18,7 +19,6 @@ import numpy as np
 from lax.boundary import compute_boundary_values
 from lax.boundary._types import (
     BoundaryValues,
-    DirectGridObservable,
     DirectRMatrixKernel,
     DoubleFourierTransform,
     EigenpairAccessor,
@@ -31,22 +31,32 @@ from lax.boundary._types import (
     InterpolatorBuilder,
     Mesh,
     OperatorMatrices,
+    PhasesDirectObservable,
     RMatrixObservable,
+    SMatrixDirectObservable,
     Solver,
     SpectrumGridObservable,
     SpectrumKernel,
     SpectrumObservable,
     TransformMatrices,
+    WavefunctionDirectObservable,
     WavefunctionObservable,
 )
 from lax.meshes import build_mesh
+from lax.operators.interaction import (
+    make_interaction_from_array,
+    make_interaction_from_block,
+    make_interaction_from_funcs,
+    make_potential_builder,
+)
 from lax.solvers import (
-    bind_direct_grid_observables,
     bind_grid_observables,
     bind_interpolators,
     bind_observables,
-    make_rmatrix_direct_grid_observable,
+    make_direct_wavefunction_kernel,
+    make_phases_direct_observable,
     make_rmatrix_direct_kernel,
+    make_smatrix_direct_observable,
     make_spectrum_kernel,
 )
 from lax.transforms import (
@@ -101,9 +111,13 @@ class _ObservableBundle:
     smatrix_grid: SpectrumGridObservable | None
     phases_grid: SpectrumGridObservable | None
     rmatrix_direct: DirectRMatrixKernel | None
-    rmatrix_direct_grid: DirectGridObservable | None
-    smatrix_direct_grid: DirectGridObservable | None
-    phases_direct_grid: DirectGridObservable | None
+    smatrix_direct: SMatrixDirectObservable | None
+    phases_direct: PhasesDirectObservable | None
+    wavefunction_direct: WavefunctionDirectObservable | None
+    interaction_from_block: Callable[..., Any] | None
+    interaction_from_array: Callable[..., Any] | None
+    interaction_from_funcs: Callable[..., Any] | None
+    potential: Callable[..., Any] | None
     interpolate_rmatrix: InterpolatorBuilder | None
     interpolate_smatrix: InterpolatorBuilder | None
     interpolate_phases: InterpolatorBuilder | None
@@ -143,12 +157,9 @@ def compile(
         automatically whenever the requested solver path needs it.
     solvers
         Runtime entry points to expose on the returned :class:`~lax.Solver`.
-        The potential passed to ``solver.spectrum(V)`` or
-        ``solver.rmatrix_direct(V)`` must have shape ``(N_c, N_c, N)`` for a
-        local potential or ``(N_c, N_c, N, N)`` for a non-local kernel, where
-        ``N = mesh.n`` and ``N_c = len(channels)``.  Use
-        :func:`lax.assemble_local` / :func:`lax.assemble_nonlocal` to build
-        these arrays.
+        The potential passed to ``solver.spectrum(V)`` or ``solver.rmatrix_direct(V)``
+        must be an :class:`~lax.Interaction`.  Build one with ``solver.potential(fn)``
+        or the ``solver.interaction_from_{block,array,funcs}`` builders.
     energies
         Compile-time energy grid used for boundary-value-dependent observables and
         aligned-grid workflows.
@@ -174,22 +185,21 @@ def compile(
     dps
         Decimal precision for the ``mpmath`` boundary-value calculation.
     mass_factor_grid
-        Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``, or ``None``
-        to use the scalar ``ChannelSpec.mass_factor`` uniformly.  When provided,
-        ``len(mass_factor_grid)`` must equal ``len(energies)``.
+        Per-energy (and optionally per-channel) ℏ²/2μ values in MeV·fm².
+        Accepted shapes (all broadcast to the canonical ``(N_E, N_c)`` form):
 
-        This enables problems where the effective reduced mass depends on energy
-        (e.g. relativistic kinematics, energy-dependent folding potentials).
-        The grid is used in three places:
+        * ``None`` — use each channel's ``ChannelSpec.mass_factor`` uniformly.
+        * scalar — the same value for all energies and channels.
+        * shape ``(N_E,)`` — one value per energy, shared across channels.
+        * shape ``(N_E, N_c)`` — fully independent per ``(energy, channel)`` pair.
+
+        When provided, ``len(mass_factor_grid)`` along the first axis must equal
+        ``len(energies)``.  The grid is used in two places:
 
         1. **Boundary values** — wave numbers and Sommerfeld parameters at each
-           compile-time energy use ``mass_factor_grid[i]``.
-        2. **Hamiltonian assembly** — pass ``mass_factor`` to ``solver.spectrum``
-           at runtime: ``jax.vmap(lambda V, mu: solver.spectrum(V, mass_factor=mu))(V_grid, mu_grid)``.
-        3. **Aligned-grid observables** — ``solver.phases_grid``,
-           ``solver.smatrix_grid``, and ``solver.rmatrix_grid`` use the stored
-           grid so the spectral denominator ``ε_k − E_i/μ(E_i)`` is correct at
-           each energy point.
+           ``(energy, channel)`` pair use ``mass_factor_grid[ie, ic]``.
+        2. **Aligned-grid direct observables** — the Hamiltonian is assembled
+           with the per-energy per-channel mass factor at each grid point.
 
     Returns
     -------
@@ -215,19 +225,18 @@ def compile(
         grid=grid,
         momenta=momenta,
     )
+    mass_factor_grid_np: np.ndarray | None
     if mass_factor_grid is not None:
         if energies is None:
             msg = "`energies` is required when `mass_factor_grid` is provided."
             raise ValueError(msg)
-        if len(mass_factor_grid) != len(energies):
-            msg = (
-                f"`mass_factor_grid` length {len(mass_factor_grid)} must equal "
-                f"`energies` length {len(energies)}."
-            )
-            raise ValueError(msg)
-    mass_factor_grid_np = (
-        np.asarray(mass_factor_grid, dtype=np.float64) if mass_factor_grid is not None else None
-    )
+        n_e = len(np.asarray(energies))
+        n_c = len(tuple(channels))
+        mass_factor_grid_np = _broadcast_mass_factor_grid(
+            np.asarray(mass_factor_grid, dtype=np.float64), n_e, n_c
+        )
+    else:
+        mass_factor_grid_np = None
     boundary, energies_array = _prepare_boundary_data(
         channels=request.channels,
         energies=energies,
@@ -243,7 +252,7 @@ def compile(
         momenta=momenta,
     )
     mass_factor_grid_jax = (
-        _to_jax_array(mass_factor_grid_np) if mass_factor_grid_np is not None else None
+        jnp.asarray(mass_factor_grid_np) if mass_factor_grid_np is not None else None
     )
     observables = _bind_solver_observables(
         request=request,
@@ -379,7 +388,7 @@ def _prepare_boundary_data(
         # The solver always stores an energy array so downstream code can rely on a
         # uniform bundle shape even when no boundary-valued observables are exposed.
         empty_energies = np.zeros((0,), dtype=np.float64)
-        return None, _to_jax_array(empty_energies)
+        return None, jnp.asarray(empty_energies)
 
     energies_np = np.asarray(energies)
     boundary = compute_boundary_values(
@@ -390,7 +399,7 @@ def _prepare_boundary_data(
         dps=dps,
         mass_factor_grid=mass_factor_grid,
     )
-    return boundary, _to_jax_array(energies_np)
+    return boundary, jnp.asarray(energies_np)
 
 
 def _prepare_transforms(
@@ -410,7 +419,7 @@ def _prepare_transforms(
     double_fourier_transform_fn: DoubleFourierTransform | None = None
 
     if grid is not None:
-        grid_array = _to_jax_array(np.asarray(grid))
+        grid_array = jnp.asarray(np.asarray(grid))
         basis_grid = compute_B_grid(mesh, grid_array)
         transforms = TransformMatrices(
             B_grid=basis_grid,
@@ -425,7 +434,7 @@ def _prepare_transforms(
         ) = make_to_grid(mesh, basis_grid, grid_array)
 
     if momenta is not None:
-        momenta_array = _to_jax_array(np.asarray(momenta))
+        momenta_array = jnp.asarray(np.asarray(momenta))
         unique_angular_momenta = sorted({channel.l for channel in channels})
         matrices_by_l = {
             angular_momentum: compute_F_momentum(mesh, momenta_array, angular_momentum)
@@ -519,9 +528,9 @@ def _bind_solver_observables(
             )
 
     rmatrix_direct_fn: DirectRMatrixKernel | None = None
-    rmatrix_direct_grid_fn: DirectGridObservable | None = None
-    smatrix_direct_grid_fn: DirectGridObservable | None = None
-    phases_direct_grid_fn: DirectGridObservable | None = None
+    smatrix_direct_fn: SMatrixDirectObservable | None = None
+    phases_direct_fn: PhasesDirectObservable | None = None
+    wavefunction_direct_fn: WavefunctionDirectObservable | None = None
     if "rmatrix_direct" in request.solvers:
         rmatrix_direct_fn = make_rmatrix_direct_kernel(
             mesh,
@@ -529,20 +538,21 @@ def _bind_solver_observables(
             request.channels,
             energies,
             boundary,
+            mass_factor_grid,
         )
-        if has_energy_grid:
-            rmatrix_direct_grid_fn = make_rmatrix_direct_grid_observable(
-                mesh,
-                operators,
-                request.channels,
-                energies,
-                boundary,
-                mass_factor_grid=mass_factor_grid,
-            )
-            (
-                smatrix_direct_grid_fn,
-                phases_direct_grid_fn,
-            ) = bind_direct_grid_observables(rmatrix_direct_grid_fn, boundary)
+        from lax.solvers.linear_solve import (
+            _DirectRMatrixKernel,  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+        )
+
+        if isinstance(rmatrix_direct_fn, _DirectRMatrixKernel):
+            smatrix_direct_fn = make_smatrix_direct_observable(rmatrix_direct_fn, boundary)
+            phases_direct_fn = make_phases_direct_observable(smatrix_direct_fn)
+        wavefunction_direct_fn = make_direct_wavefunction_kernel(
+            mesh,
+            operators,
+            request.channels,
+            energies,
+        )
 
     interpolate_rmatrix_fn: InterpolatorBuilder | None = None
     interpolate_smatrix_fn: InterpolatorBuilder | None = None
@@ -553,6 +563,11 @@ def _bind_solver_observables(
             interpolate_smatrix_fn,
             interpolate_phases_fn,
         ) = bind_interpolators(energies)
+
+    interaction_from_block_fn = make_interaction_from_block(mesh, request.channels, energies)
+    interaction_from_array_fn = make_interaction_from_array(mesh, request.channels, energies)
+    interaction_from_funcs_fn = make_interaction_from_funcs(mesh, request.channels, energies)
+    potential_fn = make_potential_builder(mesh, request.channels, energies)
 
     return _ObservableBundle(
         spectrum=spectrum_fn,
@@ -566,9 +581,13 @@ def _bind_solver_observables(
         smatrix_grid=smatrix_grid_fn,
         phases_grid=phases_grid_fn,
         rmatrix_direct=rmatrix_direct_fn,
-        rmatrix_direct_grid=rmatrix_direct_grid_fn,
-        smatrix_direct_grid=smatrix_direct_grid_fn,
-        phases_direct_grid=phases_direct_grid_fn,
+        smatrix_direct=smatrix_direct_fn,
+        phases_direct=phases_direct_fn,
+        wavefunction_direct=wavefunction_direct_fn,
+        interaction_from_block=interaction_from_block_fn,
+        interaction_from_array=interaction_from_array_fn,
+        interaction_from_funcs=interaction_from_funcs_fn,
+        potential=potential_fn,
         interpolate_rmatrix=interpolate_rmatrix_fn,
         interpolate_smatrix=interpolate_smatrix_fn,
         interpolate_phases=interpolate_phases_fn,
@@ -613,9 +632,13 @@ def _assemble_solver(
         smatrix_grid=observables.smatrix_grid,
         phases_grid=observables.phases_grid,
         rmatrix_direct=observables.rmatrix_direct,
-        rmatrix_direct_grid=observables.rmatrix_direct_grid,
-        smatrix_direct_grid=observables.smatrix_direct_grid,
-        phases_direct_grid=observables.phases_direct_grid,
+        smatrix_direct=observables.smatrix_direct,
+        phases_direct=observables.phases_direct,
+        wavefunction_direct=observables.wavefunction_direct,
+        interaction_from_block=observables.interaction_from_block,
+        interaction_from_array=observables.interaction_from_array,
+        interaction_from_funcs=observables.interaction_from_funcs,
+        potential=observables.potential,
         interpolate_rmatrix=observables.interpolate_rmatrix,
         interpolate_smatrix=observables.interpolate_smatrix,
         interpolate_phases=observables.interpolate_phases,
@@ -628,11 +651,40 @@ def _assemble_solver(
     )
 
 
-def _to_jax_array(values: np.ndarray) -> jax.Array:
-    """Convert compile-time NumPy data to an explicitly typed JAX array."""
+def _broadcast_mass_factor_grid(
+    arr: np.ndarray,
+    n_energies: int,
+    n_channels: int,
+) -> np.ndarray:
+    """Broadcast user-supplied mass_factor_grid to canonical (N_E, N_c) shape.
 
-    array: jax.Array = jnp.asarray(values)
-    return array
+    Accepts scalar, ``(N_E,)``, or ``(N_E, N_c)`` input.  Returns a
+    C-contiguous ``float64`` array of shape ``(N_E, N_c)``.
+    """
+
+    if arr.ndim == 0:
+        return np.full((n_energies, n_channels), float(arr), dtype=np.float64)
+    if arr.ndim == 1:
+        if arr.shape[0] != n_energies:
+            msg = (
+                f"`mass_factor_grid` length {arr.shape[0]} must equal "
+                f"`energies` length {n_energies}."
+            )
+            raise ValueError(msg)
+        return np.broadcast_to(arr[:, None], (n_energies, n_channels)).copy()
+    if arr.ndim == 2:
+        if arr.shape != (n_energies, n_channels):
+            msg = (
+                f"`mass_factor_grid` shape {arr.shape} must be "
+                f"({n_energies}, {n_channels}) = (N_E, N_c)."
+            )
+            raise ValueError(msg)
+        return arr.copy()
+    msg = (
+        "`mass_factor_grid` must be scalar, shape (N_E,), or shape (N_E, N_c), "
+        f"got ndim={arr.ndim}."
+    )
+    raise ValueError(msg)
 
 
 def _default_method(V_is_complex: bool) -> Method:
