@@ -83,7 +83,7 @@ Reusable interaction models and preset system parameters.
 
 .. autofunction:: lax.models.reid_np_j1_channels
 
-.. autofunction:: lax.models.reid_np_j1_potential
+.. autofunction:: lax.models.interaction_from_reid_np_j1
 
 .. autofunction:: lax.models.reid_soft_core_triplet_components
 

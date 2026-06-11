@@ -41,8 +41,6 @@ def _solver(reference: CoupledColumnReference, method: str, solvers: tuple[str, 
     )
 
 
-
-
 def _smatrix_from_direct_rmatrix(
     solver: lm.Solver, potential
 ) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:

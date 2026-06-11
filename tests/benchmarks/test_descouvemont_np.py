@@ -6,7 +6,7 @@ import pytest
 
 import lax as lm
 from lax.boundary import BoundaryValues
-from lax.models import reid_np_j1_channels, reid_np_j1_potential
+from lax.models import interaction_from_reid_np_j1, reid_np_j1_channels
 from tests.benchmarks._descouvemont_fixtures import NpJ1Reference, load_np_j1_references
 
 pytest.importorskip("jax")
@@ -32,21 +32,9 @@ def _solver(reference: NpJ1Reference, method: str, solvers: tuple[str, ...]) -> 
 
 
 def _np_interaction(solver: lm.Solver) -> object:
-    """Build the Reid n-p J=1 Interaction from its channel decomposition."""
+    """Build the Reid n-p J=1 Interaction from its term decomposition."""
 
-    A00 = np.array([[1.0, 0.0], [0.0, 0.0]])
-    A01 = np.array([[0.0, 1.0], [1.0, 0.0]])
-    A11 = np.array([[0.0, 0.0], [0.0, 1.0]])
-    r = solver.mesh.radii
-    assert solver.interaction_from_array is not None
-    return solver.interaction_from_array(
-        local=[
-            (reid_np_j1_potential(r, 0, 0), A00),
-            (reid_np_j1_potential(r, 0, 1), A01),
-            (reid_np_j1_potential(r, 1, 1), A11),
-        ],
-        energy_dependent=False,
-    )
+    return interaction_from_reid_np_j1(solver)
 
 
 def _smatrix_from_direct_rmatrix(solver: lm.Solver, potential: jax.Array) -> np.ndarray:

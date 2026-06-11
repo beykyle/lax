@@ -39,8 +39,6 @@ def _hydrogen_solver(
     )
 
 
-
-
 def _hydrogen_radial_wavefunction(n: int, angular_momentum: int, radii: np.ndarray) -> np.ndarray:
     """Return the normalized internal hydrogen radial wavefunction `u_{nl}(r)`."""
 
