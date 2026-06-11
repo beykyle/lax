@@ -85,6 +85,7 @@ docs = [
     "ipykernel>=6.29",
     "sphinx-copybutton>=0.5",
     "pypandoc-binary>=1.13",  # bundles the pandoc binary; required by nbsphinx
+    "myst-parser>=4.0",  # renders the Markdown DESIGN.md as a docs page
 ]
 
 # ── Build ────────────────────────────────────────────────────────────────────

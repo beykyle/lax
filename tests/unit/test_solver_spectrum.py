@@ -89,7 +89,7 @@ def test_make_spectrum_kernel_matches_direct_eigh() -> None:
     channels = (ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),)
     potential = jnp.asarray([[[0.5, 1.0, 1.5, 2.0]]])
 
-    kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
+    kernel = make_spectrum_kernel(mesh, operators, (channels,), keep_eigenvectors=True)
     spectrum = kernel(_interaction(potential))
     # Assembler returns H_MeV; spectrum path divides by m0 before eigh → fm⁻² eigenvalues.
     m0 = channels[0].mass_factor
@@ -114,7 +114,7 @@ def test_make_spectrum_kernel_matches_complex_symmetric_eig() -> None:
     spectrum = make_spectrum_kernel(
         mesh,
         operators,
-        channels,
+        (channels,),
         method="eig",
         keep_eigenvectors=True,
     )(_interaction(potential))
@@ -159,13 +159,13 @@ def test_bind_observables_matches_direct_spectral_helpers() -> None:
         is_open=jnp.asarray([[True]]),
         k=jnp.ones((1, 1)),
     )
-    spectrum = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)(
+    spectrum = make_spectrum_kernel(mesh, operators, (channels,), keep_eigenvectors=True)(
         _interaction(potential)
     )
 
     rmatrix, smatrix, phases, greens, wavefunction, eigh = bind_observables(
         mesh,
-        channels,
+        (channels,),
         energies=jnp.asarray([0.5]),
         boundary=boundary,
     )
@@ -228,11 +228,11 @@ def test_coupled_channel_rmatrix_matches_direct_solver() -> None:
             ],
         ]
     )
-    spectrum_kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
+    spectrum_kernel = make_spectrum_kernel(mesh, operators, (channels,), keep_eigenvectors=True)
     spectrum = spectrum_kernel(_interaction(potential))
     rmatrix, smatrix, phases, _, _, _ = bind_observables(
         mesh,
-        channels,
+        (channels,),
         energies=jnp.asarray([0.25]),
         boundary=BoundaryValues(
             H_plus=jnp.asarray([[1.0 + 1.0j, 1.1 + 0.9j]]),
@@ -252,7 +252,7 @@ def test_coupled_channel_rmatrix_matches_direct_solver() -> None:
         ],
         energy_dependent=False,
     )
-    direct = make_rmatrix_direct_kernel(mesh, operators, channels, jnp.asarray([0.25]), None)(
+    direct = make_rmatrix_direct_kernel(mesh, operators, (channels,), jnp.asarray([0.25]), None)(
         interaction
     )
 
@@ -292,11 +292,11 @@ def test_closed_channel_decoupling_matches_direct_bloch_updated_rmatrix() -> Non
         is_open=jnp.asarray([[True, False]]),
         k=jnp.asarray([[np.sqrt(energy / channels[0].mass_factor), 1.0]]),
     )
-    spectrum_kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
+    spectrum_kernel = make_spectrum_kernel(mesh, operators, (channels,), keep_eigenvectors=True)
     spectrum = spectrum_kernel(_interaction(potential))
     rmatrix, smatrix, _, _, _, _ = bind_observables(
         mesh,
-        channels,
+        (channels,),
         energies=jnp.asarray([energy]),
         boundary=boundary,
     )
@@ -404,4 +404,4 @@ def test_make_spectrum_kernel_rejects_multi_mu() -> None:
         ChannelSpec(l=0, threshold=0.0, mass_factor=3.0),
     )
     with pytest.raises(ValueError, match="uniform mass_factor"):
-        make_spectrum_kernel(mesh, operators, channels)
+        make_spectrum_kernel(mesh, operators, (channels,))

@@ -41,6 +41,12 @@ class BoundaryValues:
         shape ``(N_E, N_c)``.
     k
         Channel wave numbers ``k_c(E)`` in fm⁻¹, shape ``(N_E, N_c)``.
+
+    Notes
+    -----
+    For a solver compiled with a symmetry-block set (``lax.compile(blocks=…)``,
+    DESIGN.md §15.5) every field carries a leading ``(N_b,)`` axis — shape
+    ``(N_b, N_E, N_c)`` — stacked per block at compile time.
     """
 
     H_plus: jax.Array

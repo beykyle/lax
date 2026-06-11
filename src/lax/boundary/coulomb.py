@@ -138,6 +138,89 @@ def compute_boundary_values(
     )
 
 
+def compute_boundary_values_blocks(
+    block_groups: tuple[tuple[ChannelSpec, ...], ...],
+    energies: np.ndarray,
+    channel_radius: float,
+    z1z2: tuple[int, int] | None = None,
+    dps: int = 40,
+    mass_factor_grid: np.ndarray | None = None,
+) -> BoundaryValues:
+    """Compute boundary values stacked over a set of symmetry blocks.
+
+    Calls :func:`compute_boundary_values` once per distinct channel across all
+    blocks and assembles the results on a leading ``(N_b,)`` axis, so each
+    field has shape ``(N_b, N_E, N_c)`` (DESIGN.md §15.5).  Blocks sharing a
+    channel — e.g. partial waves with ``j = ℓ ± ½`` sharing one ``ℓ`` — reuse
+    the same ``mpmath`` evaluation.
+
+    Parameters
+    ----------
+    block_groups
+        ``N_b`` symmetry blocks of ``N_c`` channels each.
+    energies, channel_radius, z1z2, dps
+        As for :func:`compute_boundary_values`.
+    mass_factor_grid
+        Per-energy, per-channel ℏ²/2μ values, shape ``(N_E, N_c)``, shared
+        across blocks.  Because the override is keyed on the channel *position*,
+        memoization keys include the position when a grid is given.
+
+    Returns
+    -------
+    BoundaryValues
+        Stacked boundary values with ``(N_b, N_E, N_c)`` fields.
+    """
+
+    column_cache: dict[tuple[int, float, float, int | None], BoundaryValues] = {}
+
+    def column(channel: ChannelSpec, channel_index: int) -> BoundaryValues:
+        # Key on the channel's values (hashable even when mass_factor is a
+        # 0-d array) plus its position when a mass_factor_grid overrides it.
+        key = (
+            channel.l,
+            float(channel.threshold),
+            float(np.asarray(channel.mass_factor)),
+            channel_index if mass_factor_grid is not None else None,
+        )
+        if key not in column_cache:
+            column_grid = (
+                mass_factor_grid[:, channel_index : channel_index + 1]
+                if mass_factor_grid is not None
+                else None
+            )
+            column_cache[key] = compute_boundary_values(
+                channels=(channel,),
+                energies=energies,
+                channel_radius=channel_radius,
+                z1z2=z1z2,
+                dps=dps,
+                mass_factor_grid=column_grid,
+            )
+        return column_cache[key]
+
+    per_block = [
+        [column(channel, channel_index) for channel_index, channel in enumerate(group)]
+        for group in block_groups
+    ]
+
+    def stack(field: str) -> jnp.ndarray:
+        return jnp.stack(
+            [
+                jnp.concatenate([getattr(col, field) for col in columns], axis=1)
+                for columns in per_block
+            ]
+        )
+
+    return BoundaryValues(
+        H_plus=stack("H_plus"),
+        H_minus=stack("H_minus"),
+        H_plus_p=stack("H_plus_p"),
+        H_minus_p=stack("H_minus_p"),
+        is_open=stack("is_open"),
+        k=stack("k"),
+    )
+
+
 def _fill_open_channel(
     H_plus: np.ndarray,
     H_minus: np.ndarray,
@@ -293,4 +376,4 @@ def _neutral_open_channel_values(l: int, rho: float) -> tuple[complex, complex, 
     return F, G, dF, dG
 
 
-__all__ = ["compute_boundary_values"]
+__all__ = ["compute_boundary_values", "compute_boundary_values_blocks"]

@@ -209,3 +209,110 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
         np.asarray(restored.integrate(vector, diagonal_operator)),
         np.asarray(solver.integrate(vector, diagonal_operator)),
     )
+
+
+def test_blocks_compiled_solver_round_trips_through_pickle() -> None:
+    """A blocks-compiled solver (§15.5) pickles and restores without changing results."""
+
+    n = 4
+    block_groups = (
+        (lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+        (lm.ChannelSpec(l=1, threshold=0.0, mass_factor=2.0),),
+    )
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=n, scale=7.0),
+        blocks=block_groups,
+        solvers=(
+            "spectrum",
+            "rmatrix",
+            "smatrix",
+            "phases",
+            "greens",
+            "wavefunction",
+            "rmatrix_direct",
+        ),
+        energies=jnp.asarray([0.25, 0.5]),
+    )
+
+    restored = pickle.loads(pickle.dumps(solver))
+    assert restored.blocks == block_groups
+
+    g1 = jnp.asarray([0.2, 0.1, 0.0, -0.1])
+    g2 = jnp.asarray([0.25, 0.15, 0.05, -0.05])
+    A = np.ones((1, 1))
+    interaction = solver.interaction_from_array(
+        local=[(jnp.stack([g1, g2]), A)], block_dependent=True
+    )
+
+    fresh_spectrum = solver.spectrum(interaction)
+    restored_spectrum = restored.spectrum(interaction)
+    assert np.allclose(
+        np.asarray(restored_spectrum.eigenvalues),
+        np.asarray(fresh_spectrum.eigenvalues),
+    )
+    assert np.allclose(
+        np.asarray(restored.rmatrix(restored_spectrum, 0.5)),
+        np.asarray(solver.rmatrix(fresh_spectrum, 0.5)),
+    )
+    assert np.allclose(
+        np.asarray(restored.smatrix(restored_spectrum)),
+        np.asarray(solver.smatrix(fresh_spectrum)),
+    )
+    assert np.allclose(
+        np.asarray(restored.phases(restored_spectrum)),
+        np.asarray(solver.phases(fresh_spectrum)),
+    )
+    assert np.allclose(
+        np.asarray(restored.greens(restored_spectrum, 0.5)),
+        np.asarray(solver.greens(fresh_spectrum, 0.5)),
+    )
+    sources = lm.make_wavefunction_source(solver, channel_index=0, energy_index=1)
+    assert sources.shape == (2, n)
+    assert np.allclose(
+        np.asarray(restored.wavefunction(restored_spectrum, 0.5, sources)),
+        np.asarray(solver.wavefunction(fresh_spectrum, 0.5, sources)),
+    )
+    assert np.allclose(
+        np.asarray(restored.rmatrix_direct(interaction)),
+        np.asarray(solver.rmatrix_direct(interaction)),
+    )
+    assert np.allclose(
+        np.asarray(restored.smatrix_direct(interaction)),
+        np.asarray(solver.smatrix_direct(interaction)),
+    )
+    assert np.allclose(
+        np.asarray(restored.phases_direct(interaction)),
+        np.asarray(solver.phases_direct(interaction)),
+    )
+    assert np.allclose(
+        np.asarray(restored.wavefunction_direct(interaction, sources, 1)),
+        np.asarray(solver.wavefunction_direct(interaction, sources, 1)),
+    )
+
+
+def test_blocks_direct_linear_solve_solver_round_trips_through_pickle() -> None:
+    """A blocks solver compiled for the pure direct path pickles cleanly too."""
+
+    block_groups = (
+        (lm.ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),),
+        (lm.ChannelSpec(l=2, threshold=0.0, mass_factor=2.0),),
+    )
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=4, scale=7.0),
+        blocks=block_groups,
+        solvers=("rmatrix_direct",),
+        energies=jnp.asarray([0.25, 0.5]),
+        method="linear_solve",
+    )
+    restored = pickle.loads(pickle.dumps(solver))
+
+    g1 = jnp.asarray([0.2, 0.1, 0.0, -0.1])
+    interaction = solver.interaction_from_array(local=[(g1, np.ones((1, 1)))])
+    assert np.allclose(
+        np.asarray(restored.rmatrix_direct(interaction)),
+        np.asarray(solver.rmatrix_direct(interaction)),
+    )
+    assert np.allclose(
+        np.asarray(restored.phases_direct(interaction)),
+        np.asarray(solver.phases_direct(interaction)),
+    )

@@ -49,7 +49,10 @@ def make_wavefunction_source(
     -------
     jnp.ndarray
         Source vector of shape ``(N_c · N,)``, where ``N = solver.mesh.n``
-        and ``N_c = len(solver.channels)``.
+        and ``N_c = len(solver.channels)``.  For a solver compiled with
+        ``blocks=`` (DESIGN.md §15.5) the per-block sources are stacked on a
+        leading block axis — shape ``(N_b, N_c · N)`` — matching the input
+        expected by ``solver.wavefunction_direct`` in blocks mode.
 
     Raises
     ------
@@ -91,6 +94,15 @@ def make_wavefunction_source(
 
     # φ_n(a) for all basis functions  (N,)
     phi_a = mesh.basis_at_boundary
+
+    if solver.blocks is not None:
+        # Blocks mode: H⁻ carries a leading (N_b,) axis; build one source per
+        # symmetry block, stacked on that axis.
+        h_minus_b = boundary.H_minus[:, energy_index, channel_index]  # (N_b,)
+        n_b = h_minus_b.shape[0]
+        sources = jnp.zeros((n_b, n_c * n), dtype=jnp.complex128)
+        start = channel_index * n
+        return sources.at[:, start : start + n].set(phi_a[None] * h_minus_b[:, None])
 
     # H⁻ for the requested channel at the requested energy  (scalar, complex)
     h_minus_c = boundary.H_minus[energy_index, channel_index]

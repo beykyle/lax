@@ -26,10 +26,11 @@ Key features:
 
    api
    examples
+   design
 
 Links
 -----
 
 - `Source code <https://github.com/beykyle/lax>`_
-- `Architecture reference (DESIGN.md) <https://github.com/beykyle/lax/blob/main/DESIGN.md>`_
+- :doc:`Architecture reference (DESIGN.md) <design>`
 - `Issue tracker <https://github.com/beykyle/lax/issues>`_

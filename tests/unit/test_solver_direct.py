@@ -38,7 +38,7 @@ def test_make_rmatrix_direct_kernel_matches_manual_linear_solve() -> None:
     kernel = make_rmatrix_direct_kernel(
         solver.mesh,
         solver.operators,
-        solver.channels,
+        (solver.channels,),
         solver.energies,
         None,
     )
