@@ -67,7 +67,9 @@ Reusable interaction models and preset system parameters.
 
 .. autofunction:: lax.models.channels_from_rotor_model
 
-.. autofunction:: lax.models.make_rotor_coupled_optical_potential
+.. autofunction:: lax.models.rotor_coupled_optical_potential
+
+.. autofunction:: lax.models.interaction_from_rotor_model
 
 .. autofunction:: lax.models.open_channel_count
 
