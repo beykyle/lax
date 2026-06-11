@@ -10,8 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.special as sc
 
-from lax.boundary._types import DoubleFourierTransform, FourierTransform, Mesh, TransformMatrices
 from lax.meshes._basis_eval import basis_at
+from lax.types import DoubleFourierTransform, FourierTransform, Mesh, TransformMatrices
 
 
 @dataclass(frozen=True)

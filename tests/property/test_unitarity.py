@@ -8,8 +8,8 @@ import pytest
 from hypothesis import given, settings
 
 import lax as lm
-from lax.boundary._types import BoundaryValues
 from lax.spectral import smatrix_from_R
+from lax.types import BoundaryValues
 
 pytest.importorskip("jax")
 
@@ -36,6 +36,12 @@ def _local_gaussian_potential(draw: st.DrawFn) -> jax.Array:
     return jnp.asarray(V[None, None, :])  # shape (1, 1, N)
 
 
+def _interaction(V: jax.Array) -> lm.Interaction:
+    """Wrap a raw (1, 1, N) local potential as an Interaction (block = diag(V[0, 0]))."""
+
+    return lm.Interaction(block=jnp.diag(V[0, 0]), energy_dependent=False)
+
+
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
@@ -43,7 +49,7 @@ def test_smatrix_is_unitary(V: jax.Array) -> None:
     """S-matrix diagonal elements lie on the unit circle for open channels."""
     assert _SOLVER.smatrix is not None
     assert _SOLVER.spectrum is not None
-    spectrum = _SOLVER.spectrum(V)
+    spectrum = _SOLVER.spectrum(_interaction(V))
     S = np.asarray(_SOLVER.smatrix(spectrum))  # shape (N_E, 1, 1)
     assert _SOLVER.boundary is not None
     for i in range(len(_ENERGIES)):
@@ -64,7 +70,7 @@ def test_smatrix_agrees_with_per_energy_rmatrix_path(V: jax.Array) -> None:
     assert _SOLVER.smatrix is not None
     assert _SOLVER.boundary is not None
 
-    spectrum = _SOLVER.spectrum(V)
+    spectrum = _SOLVER.spectrum(_interaction(V))
     S_grid = np.asarray(_SOLVER.smatrix(spectrum))  # shape (N_E, 1, 1)
 
     for i, energy in enumerate(np.asarray(_ENERGIES)):

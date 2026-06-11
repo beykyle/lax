@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from lax.boundary._types import PropagationMatrices
+from lax.types import PropagationMatrices
 
 
 def build_legendre_x_propagation(

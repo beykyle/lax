@@ -23,8 +23,8 @@ def test_confined_hydrogen_ground_state_legendre_x_one_minus_x() -> None:
     )
 
     assert solver.spectrum is not None
-    assert solver.potential is not None
-    potential = solver.potential(lambda r: -1.0 / r)
+    assert solver.local_potential is not None
+    potential = solver.local_potential(lambda r: -1.0 / r)
     spectrum = solver.spectrum(potential)
     ground_state = float(np.asarray(spectrum.eigenvalues)[0]) * HBAR2_2MU
 
@@ -45,8 +45,8 @@ def test_harmonic_oscillator_ground_state_modified_laguerre_x2() -> None:
     )
 
     assert solver.spectrum is not None
-    assert solver.potential is not None
-    potential = solver.potential(lambda r: 0.25 * r**2)
+    assert solver.local_potential is not None
+    potential = solver.local_potential(lambda r: 0.25 * r**2)
     spectrum = solver.spectrum(potential)
     ground_state = float(np.asarray(spectrum.eigenvalues)[0])
 

@@ -13,9 +13,10 @@ from lax.spectral.observables import (
     rmatrix_from_spectrum,
     wavefunction_internal_from_spectrum,
 )
-from lax.spectral.types import Spectrum
+from lax.spectral.types import BoundaryValues, Spectrum
 
 __all__ = [
+    "BoundaryValues",
     "Spectrum",
     "CoupledChannelParameters",
     "coupled_channel_parameters_from_S",

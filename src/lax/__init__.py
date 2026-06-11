@@ -17,9 +17,8 @@ jax.config.update("jax_enable_x64", True)  # type: ignore[no-untyped-call]
 import lax.constants as constants
 import lax.models as models
 import lax.spectral as spectral
-from lax.boundary._types import Solver
 from lax.compile import compile
-from lax.types import ChannelSpec, Interaction, MeshSpec
+from lax.types import ChannelSpec, Interaction, MeshSpec, Solver
 from lax.wavefunction import make_wavefunction_source
 
 __all__ = [

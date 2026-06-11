@@ -35,6 +35,12 @@ def _local_gaussian_potential(draw: st.DrawFn) -> jax.Array:
     return jnp.asarray(V[None, None, :])  # shape (1, 1, N)
 
 
+def _interaction(V: jax.Array) -> lm.Interaction:
+    """Wrap a raw (1, 1, N) local potential as an Interaction (block = diag(V[0, 0]))."""
+
+    return lm.Interaction(block=jnp.diag(V[0, 0]), energy_dependent=False)
+
+
 @pytest.mark.property
 @settings(deadline=None)
 @given(V=_local_gaussian_potential())
@@ -50,5 +56,5 @@ def test_block_hamiltonian_is_real_symmetric(V: jax.Array) -> None:
 def test_eigenvalues_are_real_for_real_symmetric_potential(V: jax.Array) -> None:
     """eigh path returns real eigenvalues for a real symmetric Hamiltonian."""
     assert _SOLVER.spectrum is not None
-    spectrum = _SOLVER.spectrum(V)
+    spectrum = _SOLVER.spectrum(_interaction(V))
     assert jnp.issubdtype(spectrum.eigenvalues.dtype, jnp.floating)

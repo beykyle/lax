@@ -8,9 +8,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from lax.boundary._types import Solver
 from lax.constants import hbar2_over_2mu
-from lax.types import ChannelSpec, Interaction
+from lax.types import ChannelSpec, Interaction, Solver
 
 NN_MASS_FACTOR: Final[float] = hbar2_over_2mu(1.008665, 1.008665)
 

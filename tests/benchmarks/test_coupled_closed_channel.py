@@ -7,7 +7,7 @@ import pytest
 
 import lax as lm
 from lax.boundary import BoundaryValues
-from lax.solvers.observables import _decouple_closed_channels, _project_open_channels
+from lax.spectral.matching import _decouple_closed_channels, _project_open_channels
 
 pytest.importorskip("jax")
 
@@ -69,12 +69,12 @@ def _toy_interaction(solver: lm.Solver, *, coupled: bool) -> object:
     A00 = np.array([[1.0, 0.0], [0.0, 0.0]])
     A01 = np.array([[0.0, 1.0], [1.0, 0.0]])
     A11 = np.array([[0.0, 0.0], [0.0, 1.0]])
-    assert solver.potential is not None
-    interaction = solver.potential(_diagonal_open, coupling=A00) + solver.potential(
+    assert solver.local_potential is not None
+    interaction = solver.local_potential(_diagonal_open, coupling=A00) + solver.local_potential(
         _diagonal_closed, coupling=A11
     )
     if coupled:
-        interaction = interaction + solver.potential(_channel_coupling, coupling=A01)
+        interaction = interaction + solver.local_potential(_channel_coupling, coupling=A01)
     return interaction
 
 
@@ -149,8 +149,8 @@ def test_coupled_closed_channel_decoupled_limit_matches_single_channel() -> None
     coupled_solver = _coupled_solver("eigh", ("spectrum", "smatrix"))
     single_channel_solver = _single_channel_solver()
     coupled_V = _toy_interaction(coupled_solver, coupled=False)
-    assert single_channel_solver.potential is not None
-    single_channel_V = single_channel_solver.potential(_diagonal_open)
+    assert single_channel_solver.local_potential is not None
+    single_channel_V = single_channel_solver.local_potential(_diagonal_open)
 
     assert coupled_solver.spectrum is not None
     assert coupled_solver.smatrix is not None

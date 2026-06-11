@@ -40,7 +40,16 @@ MASS_E: float = 0.5109989461
 """Electron mass in MeV/c²  (PDG)."""
 
 E2: float = ALPHA * HBARC
-"""e² ≈ 1.44 MeV·fm (Coulomb coupling constant)."""
+"""e² in MeV·fm (Coulomb coupling constant), the exact ``α·ℏc`` ≈ 1.43996.
+
+This is the physically correct value and the single source of truth for the
+Coulomb constant — reference it (e.g. from ``boundary.coulomb`` and
+``models.optical``) rather than hard-coding a literal.  Some published
+benchmark references were generated with the conventional rounded value
+``1.44``; those specific tests override this constant locally (see the
+``legacy_coulomb_constant`` fixture in ``tests/conftest.py``) rather than
+forcing the rounded value on user applications.
+"""
 
 
 def hbar2_over_2mu(m1_amu: float, m2_amu: float) -> float:

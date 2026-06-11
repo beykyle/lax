@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pickle
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -68,7 +67,8 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
         "rmatrix_direct",
         "smatrix_direct",
         "phases_direct",
-        "potential",
+        "local_potential",
+        "nonlocal_potential",
         "interpolate_rmatrix",
         "interpolate_smatrix",
         "interpolate_phases",
@@ -105,9 +105,9 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
 
     fresh_spectrum = solver.spectrum(interaction)
     restored_spectrum = restored.spectrum(interaction)
-    # Vmap over the per-energy block slices (raw 2D arrays pass through spectrum's Interaction check).
-    fresh_spectra_grid = jax.vmap(solver.spectrum)(interaction_grid.block)
-    restored_spectra_grid = jax.vmap(restored.spectrum)(interaction_grid.block)
+    # Energy-dependent Interaction → spectrum() dispatches over the energy axis.
+    fresh_spectra_grid = solver.spectrum(interaction_grid)
+    restored_spectra_grid = restored.spectrum(interaction_grid)
 
     assert np.allclose(np.asarray(restored.mesh.nodes), np.asarray(solver.mesh.nodes))
     assert np.allclose(np.asarray(restored.mesh.weights), np.asarray(solver.mesh.weights))

@@ -6,7 +6,6 @@ import pytest
 
 import lax as lm
 from lax.boundary import BoundaryValues
-from lax.boundary._types import OperatorMatrices
 from lax.meshes.legendre import build_legendre_x
 from lax.operators import make_interaction_from_array
 from lax.solvers import (
@@ -16,15 +15,35 @@ from lax.solvers import (
     make_rmatrix_direct_kernel,
     make_spectrum_kernel,
 )
-from lax.solvers.observables import (
+from lax.spectral.matching import (
     _closed_channel_bloch,
     _decouple_closed_channels,
     _project_open_channels,
+    smatrix_from_R,
 )
-from lax.spectral.matching import smatrix_from_R
-from lax.types import ChannelSpec, MeshSpec
+from lax.types import ChannelSpec, MeshSpec, OperatorMatrices
 
 pytest.importorskip("jax")
+
+
+def _interaction(potential: object) -> lm.Interaction:
+    """Assemble a raw ``(N_c, N_c, N[, N])`` potential into an Interaction block.
+
+    ``spectrum()`` accepts only :class:`~lax.Interaction` objects; these unit
+    tests build raw potential arrays directly, so this mirrors the assembly the
+    kernel previously did internally (diagonal sub-blocks for local terms, full
+    sub-blocks for non-local terms) and wraps the result.
+    """
+
+    pot = jnp.asarray(potential)
+    n_c = pot.shape[0]
+    n = pot.shape[2]
+    block = jnp.zeros((n_c * n, n_c * n), dtype=pot.dtype)
+    for c in range(n_c):
+        for cp in range(n_c):
+            sub = jnp.diag(pot[c, cp]) if pot.ndim == 3 else pot[c, cp]
+            block = block.at[c * n : (c + 1) * n, cp * n : (cp + 1) * n].set(sub)
+    return lm.Interaction(block=block, energy_dependent=False)
 
 
 def test_build_q_places_boundary_values_in_channel_blocks() -> None:
@@ -71,7 +90,7 @@ def test_make_spectrum_kernel_matches_direct_eigh() -> None:
     potential = jnp.asarray([[[0.5, 1.0, 1.5, 2.0]]])
 
     kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
-    spectrum = kernel(potential)
+    spectrum = kernel(_interaction(potential))
     # Assembler returns H_MeV; spectrum path divides by m0 before eigh → fm⁻² eigenvalues.
     m0 = channels[0].mass_factor
     hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, potential)) / m0
@@ -98,7 +117,7 @@ def test_make_spectrum_kernel_matches_complex_symmetric_eig() -> None:
         channels,
         method="eig",
         keep_eigenvectors=True,
-    )(potential)
+    )(_interaction(potential))
     # Assembler returns H_MeV; spectrum path divides by m0 before eig → fm⁻² eigenvalues.
     m0 = channels[0].mass_factor
     hamiltonian = np.asarray(assemble_block_hamiltonian(mesh, operators, channels, potential)) / m0
@@ -140,7 +159,9 @@ def test_bind_observables_matches_direct_spectral_helpers() -> None:
         is_open=jnp.asarray([[True]]),
         k=jnp.ones((1, 1)),
     )
-    spectrum = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)(potential)
+    spectrum = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)(
+        _interaction(potential)
+    )
 
     rmatrix, smatrix, phases, greens, wavefunction, eigh = bind_observables(
         mesh,
@@ -181,7 +202,7 @@ def test_compile_binds_wavefunction_observable() -> None:
     assert solver.spectrum is not None
     assert solver.wavefunction is not None
 
-    spectrum = solver.spectrum(potential)
+    spectrum = solver.spectrum(_interaction(potential))
     values = np.asarray(solver.wavefunction(spectrum, 0.5, jnp.asarray([1.0, 0.0, 0.0, 0.0])))
 
     assert values.shape == (4,)
@@ -208,7 +229,7 @@ def test_coupled_channel_rmatrix_matches_direct_solver() -> None:
         ]
     )
     spectrum_kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
-    spectrum = spectrum_kernel(potential)
+    spectrum = spectrum_kernel(_interaction(potential))
     rmatrix, smatrix, phases, _, _, _ = bind_observables(
         mesh,
         channels,
@@ -272,7 +293,7 @@ def test_closed_channel_decoupling_matches_direct_bloch_updated_rmatrix() -> Non
         k=jnp.asarray([[np.sqrt(energy / channels[0].mass_factor), 1.0]]),
     )
     spectrum_kernel = make_spectrum_kernel(mesh, operators, channels, keep_eigenvectors=True)
-    spectrum = spectrum_kernel(potential)
+    spectrum = spectrum_kernel(_interaction(potential))
     rmatrix, smatrix, _, _, _, _ = bind_observables(
         mesh,
         channels,
@@ -359,3 +380,28 @@ def test_assemble_block_hamiltonian_requires_t_plus_l() -> None:
             channels,
             jnp.asarray([[[0.0, 0.0, 0.0]]]),
         )
+
+
+def test_spectrum_rejects_raw_array() -> None:
+    """`solver.spectrum` accepts only `Interaction` objects, not raw potential arrays."""
+
+    solver = lm.compile(
+        mesh=MeshSpec("legendre", "x", n=8, scale=8.0),
+        channels=(ChannelSpec(l=0, threshold=0.0, mass_factor=41.472),),
+        solvers=("spectrum",),
+    )
+    assert solver.spectrum is not None
+    with pytest.raises(TypeError, match="only Interaction"):
+        solver.spectrum(jnp.zeros((1, 1, 8)))
+
+
+def test_make_spectrum_kernel_rejects_multi_mu() -> None:
+    """`make_spectrum_kernel` validates the uniform-μ assumption it folds out of H."""
+
+    mesh, operators = build_legendre_x(n=6, scale=8.0, operators={"T+L"})
+    channels = (
+        ChannelSpec(l=0, threshold=0.0, mass_factor=2.0),
+        ChannelSpec(l=0, threshold=0.0, mass_factor=3.0),
+    )
+    with pytest.raises(ValueError, match="uniform mass_factor"):
+        make_spectrum_kernel(mesh, operators, channels)

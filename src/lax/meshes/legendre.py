@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
-from lax.boundary._types import Mesh, OperatorMatrices
+from lax.meshes._registry import register
+from lax.meshes._utils import diagonal_operator as _diagonal_operator
+from lax.meshes._utils import to_jax_array as _to_jax_array
 from lax.propagate import build_legendre_x_propagation
-
-from ._registry import register
+from lax.types import Mesh, OperatorMatrices
 
 
 @register("legendre", "x")
@@ -64,16 +64,8 @@ def build_legendre_x(
             n=n, scale=a, n_intervals=n_intervals, operators=operators
         )
 
-    x_raw: np.ndarray
-    w_raw: np.ndarray
-    x_raw, w_raw = np.polynomial.legendre.leggauss(n)
-    nodes: np.ndarray = 0.5 * (x_raw + 1.0)
-    weights: np.ndarray = 0.5 * w_raw
-    radii: np.ndarray = a * nodes
-
-    parity: np.ndarray = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
-    boundary_sign: np.ndarray = -parity if n % 2 == 1 else parity
-    basis_at_boundary: np.ndarray = boundary_sign / np.sqrt(a * nodes * (1.0 - nodes))
+    nodes, weights, radii = _shifted_legendre_quadrature(n, a)
+    basis_at_boundary = _legendre_boundary_values(nodes, a)
 
     TpL: np.ndarray = _legendre_x_t_plus_l(nodes, a)
     D: np.ndarray = _legendre_x_derivative(nodes, a)
@@ -460,21 +452,6 @@ def _legendre_x_three_halves_t_plus_l(nodes: np.ndarray, scale: float) -> np.nda
     off_diagonal = sign * numerator / (scale**2 * denominator)
     matrix[row_idx, col_idx] = off_diagonal
     matrix[col_idx, row_idx] = off_diagonal
-    return matrix
-
-
-def _to_jax_array(values: np.ndarray) -> jax.Array:
-    """Convert a NumPy array to a runtime JAX array with an explicit type."""
-
-    array: jax.Array = jnp.asarray(values)
-    return array
-
-
-def _diagonal_operator(values: np.ndarray) -> jax.Array:
-    """Construct a diagonal JAX operator from compile-time diagonal values."""
-
-    diagonal = _to_jax_array(values)
-    matrix: jax.Array = jnp.diag(diagonal)
     return matrix
 
 

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import jax
 import jax.numpy as jnp
 
-from lax.boundary._types import Mesh, OperatorMatrices
-from lax.types import ChannelSpec
+from lax.types import ChannelSpec, Mesh, OperatorMatrices
 
 
 def assemble_block_hamiltonian(
@@ -140,4 +141,41 @@ def _require_operator(operator: jax.Array | None, name: str) -> jax.Array:
     return operator
 
 
-__all__ = ["assemble_block_hamiltonian", "build_Q"]
+def uniform_mass_factor(channels: tuple[ChannelSpec, ...], context: str = "solver path") -> float:
+    """Return the single mass factor shared by all channels, or raise.
+
+    Several kernels (the spectral eigensolve and the propagated direct solve)
+    fold ``ℏ²/2μ`` out of the Hamiltonian using one scalar.  They are only
+    correct when every channel shares that mass factor, so this validates the
+    assumption at compile time rather than silently producing wrong physics.
+
+    Parameters
+    ----------
+    channels
+        Channel definitions.
+    context
+        Short description of the caller, interpolated into the error message.
+
+    Returns
+    -------
+    float
+        The shared ``channels[0].mass_factor``.
+
+    Raises
+    ------
+    ValueError
+        If the channels do not all share one mass factor.
+    """
+
+    mass_factor = channels[0].mass_factor
+    for channel in channels[1:]:
+        if channel.mass_factor != mass_factor:
+            msg = (
+                f"The {context} requires a uniform mass_factor across channels; "
+                "use the per-energy/per-channel direct grid path for multi-μ systems."
+            )
+            raise ValueError(msg)
+    return cast(float, mass_factor)
+
+
+__all__ = ["assemble_block_hamiltonian", "build_Q", "uniform_mass_factor"]

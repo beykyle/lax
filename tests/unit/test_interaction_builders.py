@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -24,6 +25,13 @@ def _make_mesh_channels():
         energy_dependent=True,
     )
     return solver
+
+
+def _is_block_diagonal(block: jnp.ndarray) -> bool:
+    """Return True when ``block`` is (numerically) diagonal."""
+
+    arr = np.asarray(block)
+    return bool(np.allclose(arr, np.diag(np.diag(arr))))
 
 
 # ---------------------------------------------------------------------------
@@ -239,10 +247,10 @@ def test_rmatrix_direct_interaction_round_trip() -> None:
     )
 
     assert solver.rmatrix_direct is not None
-    assert solver.potential is not None
+    assert solver.nonlocal_potential is not None
 
-    # Build via solver.potential (canonical API)
-    V = solver.potential(yamaguchi_kernel)
+    # Build via solver.nonlocal_potential (canonical API)
+    V = solver.nonlocal_potential(yamaguchi_kernel)
     r_from_potential = np.asarray(solver.rmatrix_direct(V))
 
     # Build via interaction_from_block (pre-assembled with Gauss scaling applied manually)
@@ -254,3 +262,111 @@ def test_rmatrix_direct_interaction_round_trip() -> None:
     r_from_block = np.asarray(solver.rmatrix_direct(interaction))
 
     assert np.allclose(r_from_potential, r_from_block, atol=1.0e-12, rtol=1.0e-12)
+
+
+# ---------------------------------------------------------------------------
+# Builders inside jax transformations (DESIGN Examples 16.3 / 16.4 patterns)
+# ---------------------------------------------------------------------------
+
+
+def _yamaguchi_solver() -> lm.Solver:
+    return lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=8, scale=8.0),
+        channels=(lm.ChannelSpec(l=0, threshold=0.0, mass_factor=41.472),),
+        operators=("T+L",),
+        solvers=("rmatrix_direct",),
+        energies=jnp.asarray([0.1, 5.0]),
+    )
+
+
+def test_interaction_builder_under_vmap() -> None:
+    """vmap over potential parameters builds a batched Interaction (Example 16.4)."""
+
+    solver = _yamaguchi_solver()
+    assert solver.interaction_from_funcs is not None
+
+    def make_interaction(alpha: jax.Array, beta: jax.Array) -> lm.Interaction:
+        def kernel(r1: jax.Array, r2: jax.Array) -> jax.Array:
+            return -2.0 * beta * (alpha + beta) ** 2 * jnp.exp(-beta * (r1 + r2)) * 41.472
+
+        assert solver.interaction_from_funcs is not None
+        return solver.interaction_from_funcs(nonlocal_=[(kernel, jnp.ones((1, 1)))])
+
+    alphas = jnp.asarray([0.2, 0.3])
+    betas = jnp.asarray([1.4, 1.5])
+    batched = jax.vmap(make_interaction)(alphas, betas)
+
+    M = solver.mesh.n
+    assert batched.block.shape == (2, M, M)
+    # Each slice equals the eagerly built Interaction for those parameters.
+    eager = make_interaction(alphas[1], betas[1])
+    assert np.allclose(np.asarray(batched.block[1]), np.asarray(eager.block), atol=1e-13)
+
+
+def test_interaction_builder_under_jit() -> None:
+    """A jitted function may build the Interaction inside the trace (Example 16.3)."""
+
+    solver = _yamaguchi_solver()
+
+    @jax.jit
+    def build_block(depth: jax.Array) -> jax.Array:
+        assert solver.interaction_from_funcs is not None
+        interaction = solver.interaction_from_funcs(
+            nonlocal_=[(lambda r1, r2: -depth * jnp.exp(-(r1 + r2)), jnp.ones((1, 1)))]
+        )
+        return interaction.block
+
+    block = build_block(jnp.asarray(5.0))
+    assert block.shape == (solver.mesh.n, solver.mesh.n)
+
+
+def test_interaction_builder_still_validates_eagerly() -> None:
+    """Outside transformations, an asymmetric assembled block still raises."""
+
+    solver = _yamaguchi_solver()
+    N = solver.mesh.n
+    asymmetric = jnp.triu(jnp.ones((N, N)))  # K(r, r') != K(r', r)
+
+    assert solver.interaction_from_array is not None
+    with pytest.raises(ValueError, match="not symmetric"):
+        solver.interaction_from_array(nonlocal_=[(asymmetric, np.array([[1.0]]))])
+
+
+# ---------------------------------------------------------------------------
+# solver.local_potential / solver.nonlocal_potential entry points
+# ---------------------------------------------------------------------------
+
+
+def test_local_potential_builds_diagonal_block() -> None:
+    """`solver.local_potential(fn)` assembles a local term (diagonal sub-block)."""
+
+    solver = _make_mesh_channels()
+    assert solver.local_potential is not None
+
+    interaction = solver.local_potential(lambda r: -50.0 * jnp.exp(-((r / 2.0) ** 2)))
+    assert not interaction.energy_dependent
+    assert _is_block_diagonal(interaction.block), "local_potential produced a non-diagonal block"
+
+
+def test_nonlocal_potential_builds_full_block() -> None:
+    """`solver.nonlocal_potential(fn)` assembles a nonlocal term (full sub-block)."""
+
+    solver = _make_mesh_channels()
+    assert solver.nonlocal_potential is not None
+
+    interaction = solver.nonlocal_potential(lambda r, rp: jnp.exp(-((r - rp) ** 2)))
+    assert not interaction.energy_dependent
+    assert not _is_block_diagonal(interaction.block), "nonlocal_potential produced a diagonal block"
+
+
+def test_local_potential_energy_dependent_carries_energy_axis() -> None:
+    """`solver.local_potential(fn(r, E), energy_dependent=True)` carries an (N_E,) axis."""
+
+    solver = _make_mesh_channels()
+    assert solver.local_potential is not None
+
+    interaction = solver.local_potential(
+        lambda r, e: -3.0 * jnp.exp(-((r / 2.0) ** 2)) + 0.02 * e, energy_dependent=True
+    )
+    assert interaction.energy_dependent
+    assert interaction.block.shape[0] == len(solver.energies)

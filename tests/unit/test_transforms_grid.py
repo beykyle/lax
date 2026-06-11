@@ -143,12 +143,13 @@ def test_legendre_to_grid_preserves_norm_for_bound_state() -> None:
     potential = jnp.asarray(
         [[[-2.5, -2.2, -1.8, -1.3, -0.9, -0.6, -0.35, -0.2, -0.1, -0.05, -0.02, -0.01]]]
     )
+    interaction = lm.Interaction(block=jnp.diag(potential[0, 0]), energy_dependent=False)
 
     assert solver.spectrum is not None
     assert solver.to_grid_vector is not None
     assert solver.transforms.grid_r is not None
 
-    spectrum = solver.spectrum(potential)
+    spectrum = solver.spectrum(interaction)
     assert spectrum.eigenvectors is not None
     eigenvector = np.asarray(spectrum.eigenvectors)[:, 0]
     grid_values = np.asarray(solver.to_grid_vector(jnp.asarray(eigenvector)))

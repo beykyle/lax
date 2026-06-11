@@ -19,6 +19,10 @@ from tests.benchmarks._descouvemont_fixtures import (
 
 pytest.importorskip("jax")
 
+# Descouvemont reference data was prepared with the rounded e² = 1.44; use it library-wide
+# for this module (boundary Sommerfeld parameter and the rotor-model Coulomb potential).
+pytestmark = pytest.mark.usefixtures("legacy_coulomb_constant")
+
 
 def _solver(reference: CoupledColumnReference, method: str, solvers: tuple[str, ...]) -> lm.Solver:
     """Compile the Descouvemont Example 3 16O + 44Ca benchmark."""

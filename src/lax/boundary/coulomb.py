@@ -10,7 +10,8 @@ import mpmath as mp
 import numpy as np
 import scipy.special as sc
 
-from lax.boundary._types import BoundaryValues
+from lax import constants
+from lax.spectral.types import BoundaryValues
 from lax.types import ChannelSpec
 
 # reportUnknownMemberType is suppressed globally in pyproject.toml (JAX/mpmath stubs).
@@ -158,17 +159,11 @@ def _fill_open_channel(
     rho = k * channel_radius
     eta = _sommerfeld(z1z2, k, mf) if z1z2 is not None else 0.0
 
-    def coulombf_at_rho(rho_value: float) -> object:
-        return _mp_coulombf(channel.l, eta, rho_value)
-
-    def coulombg_at_rho(rho_value: float) -> object:
-        return _mp_coulombg(channel.l, eta, rho_value)
-
     if eta == 0.0:
         f_value, g_value, d_f, d_g = _neutral_open_channel_values(channel.l, rho)
     else:
-        f_value = complex(coulombf_at_rho(rho))  # pyright: ignore[reportArgumentType] -- mpmath values are complex-convertible numeric objects.
-        g_value = complex(coulombg_at_rho(rho))  # pyright: ignore[reportArgumentType] -- mpmath values are complex-convertible numeric objects.
+        f_value = complex(_mp_coulombf(channel.l, eta, rho))  # pyright: ignore[reportArgumentType] -- mpmath values are complex-convertible numeric objects.
+        g_value = complex(_mp_coulombg(channel.l, eta, rho))  # pyright: ignore[reportArgumentType] -- mpmath values are complex-convertible numeric objects.
         d_f, d_g = _open_channel_derivatives(channel.l, eta, rho, f_value, g_value)
 
     H_plus[energy_index, channel_index] = g_value + 1.0j * f_value
@@ -218,7 +213,9 @@ def _sommerfeld(z1z2: tuple[int, int], k: float, mass_factor: float) -> float:
     """Return the Sommerfeld parameter in the fm^-2 convention."""
 
     z1, z2 = z1z2
-    return z1 * z2 * 1.44 / (2.0 * mass_factor * k)
+    # constants.E2 is read at call time so a test can override the Coulomb
+    # constant (e.g. to the rounded 1.44 used by published benchmark references).
+    return z1 * z2 * constants.E2 / (2.0 * mass_factor * k)
 
 
 def _mp_coulombf(l: int, eta: float, rho: float) -> object:

@@ -10,7 +10,7 @@ import numpy as np
 import scipy.special as sc
 from numpy.polynomial import Legendre
 
-from lax.boundary._types import Mesh
+from lax.types import Mesh
 
 type BasisEvaluator = Callable[[Mesh, np.ndarray], np.ndarray]
 

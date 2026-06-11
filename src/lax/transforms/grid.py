@@ -10,13 +10,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from lax.boundary._types import (
+from lax.meshes._basis_eval import basis_at
+from lax.types import (
     FromGridVectorTransform,
     GridMatrixTransform,
     GridVectorTransform,
     Mesh,
 )
-from lax.meshes._basis_eval import basis_at
 
 
 @dataclass(frozen=True)
