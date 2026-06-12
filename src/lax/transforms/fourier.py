@@ -16,27 +16,51 @@ from lax.types import DoubleFourierTransform, FourierTransform, Mesh, TransformM
 
 @dataclass(frozen=True)
 class _FourierProjection:
-    """Pickle-safe Fourier-Bessel transform."""
+    """Pickle-safe Fourier-Bessel transform.
+
+    ``fourier_matrices`` is ``(N_c, M_k, N)`` for a ``channels=`` compile and
+    ``(N_b, N_c, M_k, N)`` for a ``blocks=`` compile (DESIGN.md §15.5); the
+    stack rank selects the dispatch.
+    """
 
     fourier_matrices: jax.Array
 
     def __call__(self, values: jax.Array, channel_index: int = 0) -> jax.Array:
         """Project mesh coefficients or kernels onto the momentum grid."""
 
-        if values.ndim == 1:
+        if self.fourier_matrices.ndim == 3:
+            if values.ndim == 1:
+                return cast(
+                    jax.Array,
+                    _FOURIER_VECTOR_JIT(values, self.fourier_matrices, channel_index),
+                )
+            if values.ndim == 2:
+                return cast(
+                    jax.Array,
+                    _FOURIER_MATRIX_JIT(values, self.fourier_matrices, channel_index),
+                )
+            msg = f"fourier expects a (N,) vector or (N, N) kernel, got shape {values.shape}."
+            raise ValueError(msg)
+        values = _lift_block_values(values, self.fourier_matrices, "fourier")
+        if values.ndim == 2:
             return cast(
                 jax.Array,
-                _FOURIER_VECTOR_JIT(values, self.fourier_matrices, channel_index),
+                _FOURIER_VECTOR_BLOCKS_JIT(values, self.fourier_matrices, channel_index),
             )
         return cast(
             jax.Array,
-            _FOURIER_MATRIX_JIT(values, self.fourier_matrices, channel_index),
+            _FOURIER_MATRIX_BLOCKS_JIT(values, self.fourier_matrices, channel_index),
         )
 
 
 @dataclass(frozen=True)
 class _DoubleFourierProjection:
-    """Pickle-safe double Fourier-Bessel transform."""
+    """Pickle-safe double Fourier-Bessel transform.
+
+    Blocks-mode stacks (rank-4 ``fourier_matrices``) accept ``(N_b, N, N)``
+    block-batched kernels and broadcast unbatched ``(N, N)`` kernels across
+    the block axis.
+    """
 
     fourier_matrices: jax.Array
 
@@ -48,22 +72,88 @@ class _DoubleFourierProjection:
     ) -> jax.Array:
         """Project a mesh-space kernel onto left/right momentum grids."""
 
-        if values.ndim != 2:
-            msg = "double_fourier_transform expects a rank-2 mesh-space kernel."
-            raise ValueError(msg)
-
         resolved_right_channel_index = (
             left_channel_index if right_channel_index is None else right_channel_index
         )
+        if self.fourier_matrices.ndim == 3:
+            if values.ndim != 2:
+                msg = "double_fourier_transform expects a rank-2 mesh-space kernel."
+                raise ValueError(msg)
+            return cast(
+                jax.Array,
+                _DOUBLE_FOURIER_JIT(
+                    values,
+                    self.fourier_matrices,
+                    left_channel_index,
+                    resolved_right_channel_index,
+                ),
+            )
+        n_blocks = self.fourier_matrices.shape[0]
+        basis_size = self.fourier_matrices.shape[-1]
+        if values.ndim == 2:
+            if values.shape != (basis_size, basis_size):
+                msg = (
+                    "double_fourier_transform in blocks mode expects a (N, N) kernel "
+                    f"(broadcast across blocks) or (N_b, N, N), got shape {values.shape}."
+                )
+                raise ValueError(msg)
+            values = jnp.broadcast_to(values, (n_blocks, basis_size, basis_size))
+        elif values.ndim != 3 or values.shape != (n_blocks, basis_size, basis_size):
+            msg = (
+                "double_fourier_transform in blocks mode expects a (N, N) kernel "
+                f"(broadcast across blocks) or (N_b, N, N) = ({n_blocks}, {basis_size}, "
+                f"{basis_size}), got shape {values.shape}."
+            )
+            raise ValueError(msg)
         return cast(
             jax.Array,
-            _DOUBLE_FOURIER_JIT(
+            _DOUBLE_FOURIER_BLOCKS_JIT(
                 values,
                 self.fourier_matrices,
                 left_channel_index,
                 resolved_right_channel_index,
             ),
         )
+
+
+def _lift_block_values(values: jax.Array, fourier_matrices: jax.Array, name: str) -> jax.Array:
+    """Lift unbatched inputs onto the block axis of a rank-4 transform stack.
+
+    Deterministic rank-2 rule (shapes are static, so this is not value
+    sniffing): rank-2 with leading dimension ``N_b`` is **always** block-batched
+    vectors; otherwise it must be an ``(N, N)`` kernel, broadcast across
+    blocks.  In the ``N_b == N`` corner a broadcast kernel must therefore be
+    written explicitly as ``jnp.broadcast_to(K, (N_b, N, N))``.
+    """
+
+    n_blocks = fourier_matrices.shape[0]
+    basis_size = fourier_matrices.shape[-1]
+    if values.ndim == 1:
+        if values.shape[0] != basis_size:
+            msg = f"{name} vector must have shape (N,) = ({basis_size},), got {values.shape}."
+            raise ValueError(msg)
+        return jnp.broadcast_to(values, (n_blocks, basis_size))
+    if values.ndim == 2:
+        if values.shape[0] == n_blocks and values.shape[1] == basis_size:
+            return values
+        if values.shape == (basis_size, basis_size):
+            return jnp.broadcast_to(values, (n_blocks, basis_size, basis_size))
+        msg = (
+            f"{name} in blocks mode accepts (N_b, N) block-batched vectors, "
+            f"(N, N) kernels (broadcast across blocks), (N,) vectors, or "
+            f"(N_b, N, N) kernels with N_b = {n_blocks}, N = {basis_size}; "
+            f"got shape {values.shape}."
+        )
+        raise ValueError(msg)
+    if values.ndim == 3 and values.shape == (n_blocks, basis_size, basis_size):
+        return values
+    msg = (
+        f"{name} in blocks mode accepts (N_b, N) block-batched vectors, "
+        f"(N, N) kernels (broadcast across blocks), (N,) vectors, or "
+        f"(N_b, N, N) kernels with N_b = {n_blocks}, N = {basis_size}; "
+        f"got shape {values.shape}."
+    )
+    raise ValueError(msg)
 
 
 def compute_F_momentum(
@@ -239,6 +329,40 @@ def _double_fourier(
     return result
 
 
+def _fourier_vector_blocks(
+    values: jax.Array, fourier_matrices: jax.Array, channel_index: int
+) -> jax.Array:
+    """Project block-batched coefficients `(N_b, N)` onto the momentum grid `(N_b, M_k)`."""
+
+    matrices = fourier_matrices[:, channel_index]
+    result: jax.Array = jnp.einsum("bkn,bn->bk", matrices, values)
+    return result
+
+
+def _fourier_matrix_blocks(
+    values: jax.Array, fourier_matrices: jax.Array, channel_index: int
+) -> jax.Array:
+    """Project block-batched kernels `(N_b, N, N)` onto the momentum grid `(N_b, M_k, M_k)`."""
+
+    matrices = fourier_matrices[:, channel_index]
+    result: jax.Array = jnp.einsum("bkn,bnm,blm->bkl", matrices, values, matrices)
+    return result
+
+
+def _double_fourier_blocks(
+    values: jax.Array,
+    fourier_matrices: jax.Array,
+    left_channel_index: int,
+    right_channel_index: int,
+) -> jax.Array:
+    """Project block-batched kernels onto left/right momentum grids per block."""
+
+    left = fourier_matrices[:, left_channel_index]
+    right = fourier_matrices[:, right_channel_index]
+    result: jax.Array = jnp.einsum("bkn,bnm,blm->bkl", left, values, right)
+    return result
+
+
 _FOURIER_VECTOR_JIT = jax.jit(
     _fourier_vector,
     static_argnames=("channel_index",),
@@ -249,6 +373,18 @@ _FOURIER_MATRIX_JIT = jax.jit(
 )
 _DOUBLE_FOURIER_JIT = jax.jit(
     _double_fourier,
+    static_argnames=("left_channel_index", "right_channel_index"),
+)
+_FOURIER_VECTOR_BLOCKS_JIT = jax.jit(
+    _fourier_vector_blocks,
+    static_argnames=("channel_index",),
+)
+_FOURIER_MATRIX_BLOCKS_JIT = jax.jit(
+    _fourier_matrix_blocks,
+    static_argnames=("channel_index",),
+)
+_DOUBLE_FOURIER_BLOCKS_JIT = jax.jit(
+    _double_fourier_blocks,
     static_argnames=("left_channel_index", "right_channel_index"),
 )
 

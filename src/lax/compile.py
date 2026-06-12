@@ -28,6 +28,8 @@ from lax.operators.interaction import (
 from lax.solvers import (
     bind_grid_observables,
     bind_observables,
+    bind_wavefunction_grid_observable,
+    make_direct_wavefunction_grid_kernel,
     make_direct_wavefunction_kernel,
     make_phases_direct_observable,
     make_rmatrix_direct_kernel,
@@ -41,6 +43,7 @@ from lax.transforms import (
     make_double_fourier,
     make_fourier,
     make_integration,
+    make_matrix_element,
     make_to_grid,
 )
 from lax.types import (
@@ -55,6 +58,7 @@ from lax.types import (
     GridMatrixTransform,
     GridVectorTransform,
     Integrator,
+    MatrixElementHelper,
     Mesh,
     MeshSpec,
     Method,
@@ -67,9 +71,12 @@ from lax.types import (
     SpectrumKernel,
     SpectrumObservable,
     TransformMatrices,
+    WavefunctionDirectGridObservable,
     WavefunctionDirectObservable,
+    WavefunctionGridObservable,
     WavefunctionObservable,
 )
+from lax.wavefunction import build_wavefunction_sources
 
 
 @dataclass(frozen=True)
@@ -99,6 +106,7 @@ class _TransformBundle:
     fourier: FourierTransform | None
     double_fourier_transform: DoubleFourierTransform | None
     integrate: Integrator
+    matrix_element: MatrixElementHelper
 
 
 @dataclass(frozen=True)
@@ -112,6 +120,7 @@ class _ObservableBundle:
     greens: GreenFunctionObservable | None
     wavefunction: WavefunctionObservable | None
     eigh: EigenpairAccessor | None
+    wavefunction_grid: WavefunctionGridObservable | None
     rmatrix_grid: SpectrumGridObservable | None
     smatrix_grid: SpectrumGridObservable | None
     phases_grid: SpectrumGridObservable | None
@@ -119,6 +128,7 @@ class _ObservableBundle:
     smatrix_direct: SMatrixDirectObservable | None
     phases_direct: PhasesDirectObservable | None
     wavefunction_direct: WavefunctionDirectObservable | None
+    wavefunction_direct_grid: WavefunctionDirectGridObservable | None
     interaction_from_block: Callable[..., Any] | None
     interaction_from_array: Callable[..., Any] | None
     interaction_from_funcs: Callable[..., Any] | None
@@ -248,12 +258,6 @@ def compile(
         method=method,
         V_is_complex=V_is_complex,
     )
-    if request.block_groups is not None and momenta is not None:
-        msg = (
-            "`momenta` Fourier transforms are not supported with `blocks=`; "
-            "compile per-block solvers for momentum-space work."
-        )
-        raise ValueError(msg)
     mesh_data, operator_matrices = _build_solver_mesh(
         mesh=mesh,
         operators=request.operators,
@@ -300,15 +304,35 @@ def compile(
     momenta = _finalize_arrays(momenta, dtype, target_device) if momenta is not None else None
     transforms = _prepare_transforms(
         mesh=mesh_data,
-        channels=request.channels,
+        blocks=blocks_resolved,
         grid=grid,
         momenta=momenta,
+        block_mode=block_mode,
+        n_energies=len(np.asarray(energies)) if energies is not None else None,
     )
     mass_factor_grid_jax = (
         _finalize_arrays(jnp.asarray(mass_factor_grid_np), dtype, target_device)
         if mass_factor_grid_np is not None
         else None
     )
+    # Bake the Descouvemont eq.-27 source stack whenever a wavefunction entry
+    # point can exist (spec v0.1.5.1 §4.2): it is fully determined by the
+    # boundary cache. Propagated meshes have no single boundary basis (C2).
+    wavefunction_sources: jax.Array | None = None
+    if "wavefunction" in request.solvers and mesh_data.propagation is not None:
+        raise NotImplementedError(
+            "'wavefunction' is not supported on propagated multi-interval meshes — "
+            "the boundary basis behind the wavefunction source differs per interval. "
+            "Use a single-interval mesh."
+        )
+    if (
+        boundary is not None
+        and mesh_data.propagation is None
+        and ("wavefunction" in request.solvers or "rmatrix_direct" in request.solvers)
+    ):
+        wavefunction_sources = build_wavefunction_sources(
+            mesh_data, boundary, len(request.channels)
+        )
     observables = _bind_solver_observables(
         request=request,
         blocks=blocks_resolved,
@@ -319,6 +343,7 @@ def compile(
         boundary=boundary,
         has_energy_grid=energies is not None,
         mass_factor_grid=mass_factor_grid_jax,
+        wavefunction_sources=wavefunction_sources,
     )
     return _assemble_solver(
         request=request,
@@ -329,6 +354,7 @@ def compile(
         transforms=transforms,
         observables=observables,
         mass_factor_grid=mass_factor_grid_jax,
+        wavefunction_sources=wavefunction_sources,
     )
 
 
@@ -510,11 +536,18 @@ def _prepare_boundary_data(
 def _prepare_transforms(
     *,
     mesh: Mesh,
-    channels: tuple[ChannelSpec, ...],
+    blocks: tuple[tuple[ChannelSpec, ...], ...],
     grid: jax.Array | None,
     momenta: jax.Array | None,
+    block_mode: bool,
+    n_energies: int | None,
 ) -> _TransformBundle:
-    """Bind optional grid/Fourier transforms around one compiled mesh."""
+    """Bind optional grid/Fourier transforms around one compiled mesh.
+
+    In blocks mode the Fourier stack carries a leading ``(N_b,)`` axis,
+    ``(N_b, N_c, M_k, N)``, with ``compute_F_momentum`` deduplicated per
+    unique ℓ across the whole block set.
+    """
 
     transforms = TransformMatrices()
     to_grid_vector_fn: GridVectorTransform | None = None
@@ -540,12 +573,17 @@ def _prepare_transforms(
 
     if momenta is not None:
         momenta_array = jnp.asarray(np.asarray(momenta))
-        unique_angular_momenta = sorted({channel.l for channel in channels})
+        unique_angular_momenta = sorted({channel.l for group in blocks for channel in group})
         matrices_by_l = {
             angular_momentum: compute_F_momentum(mesh, momenta_array, angular_momentum)
             for angular_momentum in unique_angular_momenta
         }
-        fourier_stack = jnp.stack([matrices_by_l[channel.l] for channel in channels])
+        if block_mode:
+            fourier_stack = jnp.stack(
+                [jnp.stack([matrices_by_l[channel.l] for channel in group]) for group in blocks]
+            )
+        else:
+            fourier_stack = jnp.stack([matrices_by_l[channel.l] for channel in blocks[0]])
         transforms = TransformMatrices(
             B_grid=transforms.B_grid,
             grid_r=transforms.grid_r,
@@ -563,6 +601,12 @@ def _prepare_transforms(
         fourier=fourier_fn,
         double_fourier_transform=double_fourier_transform_fn,
         integrate=make_integration(mesh),
+        matrix_element=make_matrix_element(
+            matrix_size=mesh.n * len(blocks[0]),
+            n_blocks=len(blocks),
+            n_energies=n_energies,
+            block_mode=block_mode,
+        ),
     )
 
 
@@ -577,6 +621,7 @@ def _bind_solver_observables(
     boundary: BoundaryValues | None,
     has_energy_grid: bool,
     mass_factor_grid: jax.Array | None = None,
+    wavefunction_sources: jax.Array | None = None,
 ) -> _ObservableBundle:
     """Bind all runtime entry points requested for one compiled solver.
 
@@ -592,11 +637,20 @@ def _bind_solver_observables(
     greens_fn: GreenFunctionObservable | None = None
     wavefunction_fn: WavefunctionObservable | None = None
     eigh_fn: EigenpairAccessor | None = None
+    wavefunction_grid_fn: WavefunctionGridObservable | None = None
     rmatrix_grid_fn: SpectrumGridObservable | None = None
     smatrix_grid_fn: SpectrumGridObservable | None = None
     phases_grid_fn: SpectrumGridObservable | None = None
+    sources_blocks = (
+        None
+        if wavefunction_sources is None
+        else (wavefunction_sources if block_mode else wavefunction_sources[None])
+    )
 
     if request.needs_spectrum:
+        spectral_mass_factor_grid, mass_factor_nonuniform = _spectral_mass_factor_grid(
+            mass_factor_grid
+        )
         spectrum_fn = make_spectrum_kernel(
             mesh,
             operators,
@@ -604,6 +658,8 @@ def _bind_solver_observables(
             method=request.method,
             keep_eigenvectors=request.keep_eigenvectors,
             block_mode=block_mode,
+            mass_factor_grid=spectral_mass_factor_grid,
+            mass_factor_nonuniform=mass_factor_nonuniform,
         )
         (
             bound_rmatrix,
@@ -612,7 +668,14 @@ def _bind_solver_observables(
             bound_greens,
             bound_wavefunction,
             bound_eigh,
-        ) = bind_observables(mesh, blocks, energies, boundary, block_mode=block_mode)
+        ) = bind_observables(
+            mesh,
+            blocks,
+            energies,
+            boundary,
+            block_mode=block_mode,
+            mass_factor_nonuniform=mass_factor_nonuniform,
+        )
 
         # S- and phase-shift observables are built from the spectral R-matrix, so
         # the raw R observable remains available whenever matching is requested.
@@ -637,8 +700,20 @@ def _bind_solver_observables(
                 blocks,
                 energies,
                 boundary,
-                mass_factor_grid=mass_factor_grid,
+                mass_factor_grid=spectral_mass_factor_grid,
                 block_mode=block_mode,
+            )
+        # The wavefunction-grid observable mirrors the single-energy
+        # `wavefunction` gating; it is spectral-only (the linear_solve method
+        # is served by wavefunction_direct_grid below).
+        if "wavefunction" in request.solvers and sources_blocks is not None:
+            wavefunction_grid_fn = bind_wavefunction_grid_observable(
+                blocks,
+                energies,
+                sources_blocks,
+                mass_factor_grid=spectral_mass_factor_grid,
+                block_mode=block_mode,
+                mass_factor_nonuniform=mass_factor_nonuniform,
             )
 
     rmatrix_direct_fn: DirectRMatrixKernel | None = None
@@ -663,6 +738,7 @@ def _bind_solver_observables(
     # ("rmatrix_direct"), and is the binding for "wavefunction" under
     # method="linear_solve" (§14, Example 16.8) where no spectral path exists.
     wavefunction_via_direct = "wavefunction" in request.solvers and request.method == "linear_solve"
+    wavefunction_direct_grid_fn: WavefunctionDirectGridObservable | None = None
     if "rmatrix_direct" in request.solvers or wavefunction_via_direct:
         wavefunction_direct_fn = make_direct_wavefunction_kernel(
             mesh,
@@ -672,6 +748,16 @@ def _bind_solver_observables(
             mass_factor_grid,
             block_mode=block_mode,
         )
+        if sources_blocks is not None:
+            wavefunction_direct_grid_fn = make_direct_wavefunction_grid_kernel(
+                mesh,
+                operators,
+                blocks,
+                energies,
+                sources_blocks,
+                mass_factor_grid,
+                block_mode=block_mode,
+            )
 
     n_blocks = len(blocks) if block_mode else None
     interaction_from_block_fn = make_interaction_from_block(
@@ -695,12 +781,14 @@ def _bind_solver_observables(
         greens=greens_fn,
         wavefunction=wavefunction_fn,
         eigh=eigh_fn,
+        wavefunction_grid=wavefunction_grid_fn,
         rmatrix_grid=rmatrix_grid_fn,
         smatrix_grid=smatrix_grid_fn,
         phases_grid=phases_grid_fn,
         rmatrix_direct=rmatrix_direct_fn,
         smatrix_direct=smatrix_direct_fn,
         phases_direct=phases_direct_fn,
+        wavefunction_direct_grid=wavefunction_direct_grid_fn,
         wavefunction_direct=wavefunction_direct_fn,
         interaction_from_block=interaction_from_block_fn,
         interaction_from_array=interaction_from_array_fn,
@@ -720,6 +808,7 @@ def _assemble_solver(
     transforms: _TransformBundle,
     observables: _ObservableBundle,
     mass_factor_grid: jax.Array | None = None,
+    wavefunction_sources: jax.Array | None = None,
 ) -> Solver:
     """Assemble the final public solver bundle from normalized subcomponents."""
 
@@ -744,6 +833,8 @@ def _assemble_solver(
         phases=observables.phases,
         greens=observables.greens,
         wavefunction=observables.wavefunction,
+        wavefunction_grid=observables.wavefunction_grid,
+        wavefunction_sources=wavefunction_sources,
         eigh=observables.eigh,
         rmatrix_grid=observables.rmatrix_grid,
         smatrix_grid=observables.smatrix_grid,
@@ -752,6 +843,7 @@ def _assemble_solver(
         smatrix_direct=observables.smatrix_direct,
         phases_direct=observables.phases_direct,
         wavefunction_direct=observables.wavefunction_direct,
+        wavefunction_direct_grid=observables.wavefunction_direct_grid,
         interaction_from_block=observables.interaction_from_block,
         interaction_from_array=observables.interaction_from_array,
         interaction_from_funcs=observables.interaction_from_funcs,
@@ -763,7 +855,40 @@ def _assemble_solver(
         fourier=transforms.fourier,
         double_fourier_transform=transforms.double_fourier_transform,
         integrate=transforms.integrate,
+        matrix_element=transforms.matrix_element,
     )
+
+
+def _spectral_mass_factor_grid(
+    mass_factor_grid: jax.Array | None,
+) -> tuple[jax.Array | None, bool]:
+    """Reduce the canonical μ(E) grid for the spectral path and detect non-uniformity.
+
+    The spectral path folds a single ℏ²/2μ per energy out of the Hamiltonian,
+    so a ``(N_E, N_c)`` grid must be per-channel uniform; the validated grid
+    is reduced to ``(N_E,)``.  Returns ``(reduced_grid, nonuniform)`` where
+    ``nonuniform`` is ``True`` iff μ genuinely varies with energy — the
+    condition that forces the energy-batched spectrum path and stubs out the
+    static-regime observables (silently mixing per-energy boundary values
+    with a single-μ spectral denominator is wrong matching).
+    """
+
+    if mass_factor_grid is None:
+        return None, False
+    grid_np = np.asarray(mass_factor_grid)
+    if grid_np.ndim == 2:
+        if not np.allclose(grid_np, grid_np[:, :1]):
+            msg = (
+                "The spectral path requires a per-channel-uniform mass_factor_grid "
+                "(shape (N_E,) or per-channel-identical (N_E, N_c)); per-channel "
+                "mass factors are a direct-path feature (method='linear_solve')."
+            )
+            raise ValueError(msg)
+        reduced = mass_factor_grid[:, 0]
+    else:
+        reduced = mass_factor_grid
+    nonuniform = not bool(np.allclose(grid_np, grid_np.flat[0]))
+    return reduced, nonuniform
 
 
 def _resolve_device(device: Any) -> Any:

@@ -125,14 +125,14 @@ class Interaction:
             return NotImplemented
         energy_dependent = self.energy_dependent or other.energy_dependent
         block_dependent = self.block_dependent or other.block_dependent
-        b1 = _lift_block(
+        b1 = lift_block(
             self.block,
             self.energy_dependent,
             self.block_dependent,
             energy_dependent,
             block_dependent,
         )
-        b2 = _lift_block(
+        b2 = lift_block(
             other.block,
             other.energy_dependent,
             other.block_dependent,
@@ -151,7 +151,7 @@ class Interaction:
         return NotImplemented
 
 
-def _lift_block(
+def lift_block(
     block: jax.Array,
     has_energy: bool,
     has_block: bool,
@@ -314,6 +314,78 @@ class WavefunctionObservable(Protocol):
             Internal wavefunction coefficients in the mesh basis, shape
             ``(M,)`` — ``(N_b, M)`` for a solver compiled with ``blocks=``
             (§15.5), where ``source`` is ``(N_b, M)`` or a shared ``(M,)``.
+        """
+        ...
+
+
+class WavefunctionGridObservable(Protocol):
+    """Callable for internal wavefunctions at every compile-time grid energy.
+
+    Spectral path only (``method ∈ {"eigh", "eig"}``); under
+    ``method="linear_solve"`` use ``solver.wavefunction_direct_grid``.
+    Sources are baked at compile time (Descouvemont eq. 27); both evaluation
+    regimes are served by one entry point — the energy-batched regime is
+    detected from the ``Spectrum`` rank.
+    """
+
+    def __call__(self, spectrum: Spectrum, channel_index: int | None = 0) -> jax.Array:
+        """Evaluate internal wavefunctions for every ``(block, grid-energy)`` pair.
+
+        Parameters
+        ----------
+        spectrum
+            Static-V :class:`Spectrum` (diagonalize once, evaluate the grid)
+            or the energy-batched ``Spectrum`` produced by an
+            energy-dependent :class:`~lax.Interaction` (aligned per-energy
+            evaluation).  Must have been produced with ``'wavefunction'``
+            (or ``'greens'``) in ``solvers=`` so eigenvectors are stored.
+        channel_index
+            Incoming channel ``c`` within the block (default 0).  ``None``
+            returns all incoming channels on an extra ``N_c`` axis.
+
+        Returns
+        -------
+        jax.Array
+            Mesh-coefficient vectors, shape ``(N_E, M)`` — ``(N_b, N_E, M)``
+            in blocks mode; with ``channel_index=None`` an ``N_c`` axis is
+            inserted before ``M``.  Entries at grid energies where the
+            incoming channel is closed are mathematically defined (Whittaker
+            source) but are **not** scattering wavefunctions — slice by
+            ``solver.boundary.is_open`` if needed.
+        """
+        ...
+
+
+class WavefunctionDirectGridObservable(Protocol):
+    """Callable for direct-path wavefunctions at every compile-time grid energy.
+
+    The ``method="linear_solve"`` companion of ``wavefunction_grid``: one
+    linear solve per ``(block, energy)`` against the baked source stack.
+    Fully differentiable, and inherits the direct path's per-channel μ
+    support.
+    """
+
+    def __call__(
+        self,
+        potential: jax.Array | Interaction,
+        channel_index: int | None = 0,
+    ) -> jax.Array:
+        """Solve ``C(E_i) ψ = source_i`` for every ``(block, grid-energy)`` pair.
+
+        Parameters
+        ----------
+        potential
+            An :class:`~lax.Interaction` (energy-/block-dependent dispatch is
+            handled transparently); raw arrays are rejected at runtime.
+        channel_index
+            Incoming channel ``c`` within the block (default 0); ``None``
+            returns all incoming channels on an extra ``N_c`` axis.
+
+        Returns
+        -------
+        jax.Array
+            Mesh-coefficient vectors with the same shapes and closed-channel
+            contract as ``wavefunction_grid``.
         """
         ...
 
@@ -557,6 +629,49 @@ class DoubleFourierTransform(Protocol):
         ...
 
 
+class MatrixElementHelper(Protocol):
+    """Callable for two-state bilinear matrix elements in the mesh basis.
+
+    Batched over the symmetry-block and energy axes; bound unconditionally on
+    every compiled solver (it depends only on compile-time shapes).
+    """
+
+    def __call__(
+        self,
+        bra: jax.Array,
+        ket: jax.Array,
+        operator: jax.Array | Interaction | None = None,
+        *,
+        conjugate: bool,
+    ) -> jax.Array:
+        """Evaluate ``braᵀ·O·ket`` (``conjugate=False``) or ``bra†·O·ket``.
+
+        Parameters
+        ----------
+        bra, ket
+            Mesh-coefficient arrays: ``(M,)``, rank-2 (block-leading
+            ``(N_b, M)`` in blocks mode, energy-leading ``(N_E, M)`` in
+            channels mode — a deterministic mode-based rule, never
+            shape-sniffing), or ``(N_b, N_E, M)`` with explicit size-1 axes.
+        operator
+            ``None`` (overlap), **unscaled** local node values ``(M,)``, a
+            caller-Gauss-scaled kernel ``(M, M)``, or an
+            :class:`~lax.Interaction` (recommended — its block is already
+            correctly scaled; static flags drive axis alignment).
+        conjugate
+            Keyword-required: ``False`` is the non-conjugated bilinear (the
+            DWBA form, matching the complex-symmetric spectral metric);
+            ``True`` is the Hermitian inner product.
+
+        Returns
+        -------
+        jax.Array
+            The broadcast batch shape of the inputs' contributed axes —
+            scalar, ``(N_b,)``, ``(N_E,)``, or ``(N_b, N_E)``.
+        """
+        ...
+
+
 class Integrator(Protocol):
     """Callable for norms and expectation values in the mesh basis."""
 
@@ -729,7 +844,8 @@ class TransformMatrices:
         Also accessible as ``solver.grid_r``.
     F_momentum
         Fourier-Bessel transform matrices, one per channel,
-        shape ``(N_c, M_k, N)``.  Used by the ``fourier`` callable.
+        shape ``(N_c, M_k, N)`` — ``(N_b, N_c, M_k, N)`` for a solver
+        compiled with ``blocks=`` (§15.5).  Used by the ``fourier`` callable.
     momenta
         Momentum grid passed to :func:`lax.compile`, shape ``(M_k,)`` in fm⁻¹.
         Also accessible as ``solver.momenta``.
@@ -792,6 +908,14 @@ class Solver:
     wavefunction
         ``(spectrum, E, source) → ψ_int`` — internal wavefunction; requires
         ``'wavefunction'`` in ``solvers=``.
+    wavefunction_grid
+        ``(spectrum, channel_index=0) → ψ`` — internal wavefunctions at every
+        compile-time grid energy (both evaluation regimes); requires
+        ``'wavefunction'`` in ``solvers=`` and an energy grid.
+    wavefunction_sources
+        Baked Descouvemont eq.-27 source stack ``(N_E, N_c, M)`` —
+        ``(N_b, N_E, N_c, M)`` in blocks mode — or ``None`` when no
+        wavefunction entry point was requested.
     eigh
         ``(spectrum) → (ε, U)`` — raw eigenpairs; raises if eigenvectors
         were not retained.
@@ -806,6 +930,9 @@ class Solver:
 
     rmatrix_direct
         ``(V) → R`` — per-energy linear-solve R-matrix on the compile-time grid.
+    wavefunction_direct_grid
+        ``(V, channel_index=0) → ψ`` — direct-path wavefunctions at every
+        compile-time grid energy; bound whenever the direct path is active.
 
     **Transform helpers**:
 
@@ -821,6 +948,9 @@ class Solver:
         ``(V, ...) → V(p, p')`` — double Bessel transform for kernels.
     integrate
         ``(c, operator=None) → ⟨ψ|O|ψ⟩`` — norms and expectation values.
+    matrix_element
+        ``(bra, ket, operator=None, *, conjugate) → braᵀ·O·ket`` — two-state
+        bilinear form, batched over block/energy axes; always bound.
     """
 
     mesh: Mesh
@@ -838,6 +968,8 @@ class Solver:
     phases: SpectrumObservable | None = None
     greens: GreenFunctionObservable | None = None
     wavefunction: WavefunctionObservable | None = None
+    wavefunction_grid: WavefunctionGridObservable | None = None
+    wavefunction_sources: jax.Array | None = None
     eigh: EigenpairAccessor | None = None
     rmatrix_grid: SpectrumGridObservable | None = None
     smatrix_grid: SpectrumGridObservable | None = None
@@ -846,6 +978,7 @@ class Solver:
     smatrix_direct: SMatrixDirectObservable | None = None
     phases_direct: PhasesDirectObservable | None = None
     wavefunction_direct: WavefunctionDirectObservable | None = None
+    wavefunction_direct_grid: WavefunctionDirectGridObservable | None = None
     interaction_from_block: Callable[..., Any] | None = None
     interaction_from_array: Callable[..., Any] | None = None
     interaction_from_funcs: Callable[..., Any] | None = None
@@ -857,6 +990,7 @@ class Solver:
     fourier: FourierTransform | None = None
     double_fourier_transform: DoubleFourierTransform | None = None
     integrate: Integrator | None = None
+    matrix_element: MatrixElementHelper | None = None
 
     # ------------------------------------------------------------------
     # Convenience properties
@@ -882,6 +1016,7 @@ class Solver:
             "phases",
             "greens",
             "wavefunction",
+            "wavefunction_grid",
             "eigh",
             "rmatrix_grid",
             "smatrix_grid",
@@ -890,12 +1025,14 @@ class Solver:
             "smatrix_direct",
             "phases_direct",
             "wavefunction_direct",
+            "wavefunction_direct_grid",
         )
         _transform_names = (
             "to_grid_vector",
             "to_grid_matrix",
             "fourier",
             "integrate",
+            "matrix_element",
         )
         live = [n for n in _observable_names if getattr(self, n) is not None]
         transforms = [n for n in _transform_names if getattr(self, n) is not None]
@@ -925,6 +1062,7 @@ __all__ = [
     "GridVectorTransform",
     "Integrator",
     "Interaction",
+    "MatrixElementHelper",
     "Mesh",
     "MeshFamily",
     "MeshSpec",
@@ -940,6 +1078,8 @@ __all__ = [
     "SpectrumKernel",
     "SpectrumObservable",
     "TransformMatrices",
+    "WavefunctionDirectGridObservable",
     "WavefunctionDirectObservable",
+    "WavefunctionGridObservable",
     "WavefunctionObservable",
 ]

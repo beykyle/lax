@@ -112,23 +112,26 @@ def make_to_grid(
 
 
 def _to_grid_vector(values: jax.Array, basis_grid: jax.Array) -> jax.Array:
-    """Project mesh coefficients `(N,)` onto the radial grid `(M_r,)`."""
+    """Project mesh coefficients `(..., N)` onto the radial grid `(..., M_r)`.
 
-    result: jax.Array = basis_grid @ values
+    Arbitrary leading batch axes (symmetry-block, energy) pass through.
+    """
+
+    result: jax.Array = jnp.einsum("rn,...n->...r", basis_grid, values)
     return result
 
 
 def _from_grid_array(values: jax.Array, projection_matrix: jax.Array) -> jax.Array:
-    """Project sampled radial-grid values `(M_r,)` back to mesh coefficients `(N,)`."""
+    """Project sampled radial-grid values `(..., M_r)` back to mesh coefficients `(..., N)`."""
 
-    result: jax.Array = projection_matrix @ values
+    result: jax.Array = jnp.einsum("nr,...r->...n", projection_matrix, values)
     return result
 
 
 def _to_grid_matrix(values: jax.Array, basis_grid: jax.Array) -> jax.Array:
-    """Project a mesh-space kernel `(N, N)` onto the radial grid `(M_r, M_r)`."""
+    """Project a mesh-space kernel `(..., N, N)` onto the radial grid `(..., M_r, M_r)`."""
 
-    result: jax.Array = basis_grid @ values @ basis_grid.T
+    result: jax.Array = jnp.einsum("rn,...nm,sm->...rs", basis_grid, values, basis_grid)
     return result
 
 

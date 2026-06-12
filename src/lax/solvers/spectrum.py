@@ -59,13 +59,19 @@ class _SpectrumKernel:
     keep_eigenvectors: bool
     n_blocks: int
     block_mode: bool
+    mass_factor_grid: jax.Array | None = None  # (N_E,) per-energy ℏ²/2μ, or None
+    mass_factor_nonuniform: bool = False
 
     def __call__(self, potential: jax.Array | Interaction) -> Spectrum:
         """Return the spectral decomposition(s) for one potential.
 
         Energy-dependent interactions add an ``(N_E,)`` axis after the block
         axis (block × energy order); block-independent interactions broadcast
-        across the ``(N_b,)`` axis.
+        across the ``(N_b,)`` axis.  A **non-uniform** ``mass_factor_grid``
+        forces the energy-batched path even for an energy-independent
+        potential: the dimensionless ``H/μ(E)`` varies with E, so
+        diagonalize-once is invalid physics — the per-energy spectra carry the
+        correct ``μ_e`` and the aligned-grid observables consume them.
         """
 
         if not isinstance(potential, Interaction):
@@ -89,20 +95,52 @@ class _SpectrumKernel:
             msg = f"Method {self.method!r} is not implemented in the MVP spectrum kernel."
             raise ValueError(msg)
         block = lift_to_blocks(potential.block, potential.block_dependent, self.n_blocks)
-        jit_fn = grid_jit if potential.energy_dependent else blocks_jit
-        spectrum = cast(
-            Spectrum,
-            jit_fn(
-                block,
-                self.mesh,
-                self.operators,
-                self.centrifugal,
-                self.thresholds,
-                self.q,
-                self.mass_factor,
-                self.keep_eigenvectors,
-            ),
-        )
+        use_grid = potential.energy_dependent or self.mass_factor_nonuniform
+        if use_grid:
+            if self.mass_factor_grid is not None:
+                grid_mass_factors = self.mass_factor_grid
+                n_e = grid_mass_factors.shape[0]
+                if potential.energy_dependent and block.shape[1] != n_e:
+                    msg = (
+                        f"energy-dependent Interaction carries {block.shape[1]} energies "
+                        f"but the compile-time grid has N_E = {n_e}."
+                    )
+                    raise ValueError(msg)
+            else:
+                n_e = block.shape[1]
+                grid_mass_factors = jnp.full(n_e, self.mass_factor)
+            if not potential.energy_dependent:
+                block = jnp.broadcast_to(
+                    block[:, None],
+                    (block.shape[0], n_e, block.shape[-2], block.shape[-1]),
+                )
+            spectrum = cast(
+                Spectrum,
+                grid_jit(
+                    block,
+                    self.mesh,
+                    self.operators,
+                    self.centrifugal,
+                    self.thresholds,
+                    self.q,
+                    grid_mass_factors,
+                    self.keep_eigenvectors,
+                ),
+            )
+        else:
+            spectrum = cast(
+                Spectrum,
+                blocks_jit(
+                    block,
+                    self.mesh,
+                    self.operators,
+                    self.centrifugal,
+                    self.thresholds,
+                    self.q,
+                    self.mass_factor,
+                    self.keep_eigenvectors,
+                ),
+            )
         return spectrum if self.block_mode else take_block0(spectrum)
 
 
@@ -113,6 +151,8 @@ def make_spectrum_kernel(
     method: Method = "eigh",
     keep_eigenvectors: bool = False,
     block_mode: bool = False,
+    mass_factor_grid: jax.Array | None = None,
+    mass_factor_nonuniform: bool = False,
 ) -> SpectrumKernel:
     """Build a JIT-compiled ``spectrum(V) → Spectrum`` kernel.
 
@@ -140,6 +180,15 @@ def make_spectrum_kernel(
     block_mode
         ``True`` for a ``blocks=`` compile: outputs keep the leading
         ``(N_b,)`` axis and block-dependent Interactions are accepted.
+    mass_factor_grid
+        Per-energy ℏ²/2μ in MeV·fm², reduced to shape ``(N_E,)`` (per-channel
+        uniformity is validated upstream).  Used by the energy-batched path so
+        each per-energy Hamiltonian is scaled by its own ``μ_e``.
+    mass_factor_nonuniform
+        ``True`` when ``mass_factor_grid`` genuinely varies with energy.
+        Forces ``spectrum(V)`` onto the energy-batched path even for an
+        energy-independent ``V`` — ``H/μ(E)`` changes with E, so a single
+        diagonalization would be silently wrong physics.
 
     Returns
     -------
@@ -149,8 +198,9 @@ def make_spectrum_kernel(
     Notes
     -----
     The spectral path folds a single ℏ²/2μ out of the Hamiltonian, so it
-    requires one uniform mass factor across all channels of all blocks;
-    per-block/per-channel μ remains a direct-path feature.
+    requires one uniform mass factor across all channels of all blocks
+    (per energy, when ``mass_factor_grid`` is given); per-block/per-channel
+    μ remains a direct-path feature.
     """
 
     mass_factor = uniform_block_mass_factor(blocks, context="spectral eigensolve path")
@@ -167,6 +217,8 @@ def make_spectrum_kernel(
         keep_eigenvectors=keep_eigenvectors,
         n_blocks=len(blocks),
         block_mode=block_mode,
+        mass_factor_grid=mass_factor_grid,
+        mass_factor_nonuniform=mass_factor_nonuniform,
     )
 
 
@@ -279,15 +331,17 @@ def _spectrum_blocks_grid(
     centrifugal: jax.Array,
     thresholds: jax.Array,
     q: jax.Array,
-    mass_factor: float,
+    mass_factor_grid: jax.Array,
     keep_eigenvectors: bool,
 ) -> Spectrum:
     """Nested block × energy vmap of one spectrum core.
 
-    ``blocks`` has shape ``(N_b, N_E, M, M)``; the returned :class:`Spectrum`
-    leaves carry ``(N_b, N_E, …)`` axes.  Under ``method="eig"`` the host
-    callback (``vmap_method="sequential"``) runs one host ``eig`` per
-    ``(b, i)`` pair — correct but sequential.
+    ``blocks`` has shape ``(N_b, N_E, M, M)`` and ``mass_factor_grid`` is the
+    aligned ``(N_E,)`` per-energy ℏ²/2μ — each per-energy Hamiltonian is
+    scaled by its own ``μ_e`` (shared across blocks).  The returned
+    :class:`Spectrum` leaves carry ``(N_b, N_E, …)`` axes.  Under
+    ``method="eig"`` the host callback (``vmap_method="sequential"``) runs one
+    host ``eig`` per ``(b, i)`` pair — correct but sequential.
     """
 
     def one_block(
@@ -295,7 +349,7 @@ def _spectrum_blocks_grid(
         centrifugal_row: jax.Array,
         threshold_row: jax.Array,
     ) -> Spectrum:
-        def one_energy(block: jax.Array) -> Spectrum:
+        def one_energy(block: jax.Array, mass_factor: jax.Array) -> Spectrum:
             return core(
                 block,
                 mesh,
@@ -307,7 +361,7 @@ def _spectrum_blocks_grid(
                 keep_eigenvectors,
             )
 
-        return jax.vmap(one_energy)(block_grid)
+        return jax.vmap(one_energy)(block_grid, mass_factor_grid)
 
     return jax.vmap(one_block)(blocks, centrifugal, thresholds)
 

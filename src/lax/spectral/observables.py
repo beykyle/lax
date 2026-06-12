@@ -133,6 +133,57 @@ def wavefunction_internal_from_spectrum(
     return values
 
 
+def wavefunction_grid_from_spectrum(
+    spectrum: Spectrum,
+    energies: jax.Array,
+    sources: jax.Array,
+    mass_factor: float | jax.Array,
+) -> jax.Array:
+    """Return internal wavefunctions for every grid energy from one spectrum.
+
+    The fused static-regime evaluation: ``ψ(E_i) = G(E_i)·source_i`` for the
+    whole compile-time grid in two einsums, without materializing any
+    ``(M, M)`` Green's matrix — only the spectral denominator and the source
+    change per energy ("diagonalize once, evaluate many energies").
+
+    Parameters
+    ----------
+    spectrum
+        Stored eigensystem of the Bloch-augmented Hamiltonian (single block,
+        eigenvectors retained).
+    energies
+        Compile-time energy grid in MeV, shape ``(N_E,)``.
+    sources
+        Per-energy, per-incoming-channel source stack, shape ``(N_E, K, M)``
+        (``K`` incoming channels; see :func:`lax.make_wavefunction_source_grid`).
+    mass_factor
+        Conversion factor ``ℏ² / 2μ`` in MeV·fm² (uniform — the static regime
+        is invalid for a non-uniform μ(E); see the C4 contract).
+
+    Returns
+    -------
+    jax.Array
+        Internal wavefunction coefficients, shape ``(N_E, K, M)``.
+
+    Raises
+    ------
+    ValueError
+        If the spectrum was compiled without eigenvectors.
+    """
+
+    eigenvectors = spectrum.eigenvectors
+    if eigenvectors is None:
+        msg = "Wavefunction evaluation requires stored eigenvectors."
+        raise ValueError(msg)
+    denominator = 1.0 / (
+        spectrum.eigenvalues[None, :] - (energies / mass_factor)[:, None]
+    )  # (N_E, M)
+    transpose = _spectral_metric_transpose(spectrum, eigenvectors)
+    projected = jnp.einsum("km,ecm->eck", transpose, sources)
+    values: jax.Array = jnp.einsum("mk,ek,eck->ecm", eigenvectors, denominator, projected)
+    return values
+
+
 def _spectral_denominator(
     spectrum: Spectrum,
     energy: float | jax.Array,
@@ -154,5 +205,6 @@ def _spectral_metric_transpose(spectrum: Spectrum, eigenvectors: jax.Array) -> j
 __all__ = [
     "greens_from_spectrum",
     "rmatrix_from_spectrum",
+    "wavefunction_grid_from_spectrum",
     "wavefunction_internal_from_spectrum",
 ]

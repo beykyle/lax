@@ -246,14 +246,8 @@ def test_compile_validation_errors() -> None:
             solvers=DIRECT,
             energies=ENERGIES,
         )
-    with pytest.raises(ValueError, match="not supported with `blocks="):
-        lax.compile(
-            mesh=MESH,
-            blocks=[group],
-            solvers=DIRECT,
-            energies=ENERGIES,
-            momenta=jnp.linspace(0.1, 2.0, 10),
-        )
+    # momenta= with blocks= is supported since the F3 transform batching
+    # (see test_blocks_transforms.py); only propagated meshes still reject it.
     with pytest.raises(ValueError, match="not supported on propagated meshes"):
         lax.compile(
             mesh=lax.MeshSpec("legendre", "x", n=N, scale=RADIUS, extras={"n_intervals": 4}),
