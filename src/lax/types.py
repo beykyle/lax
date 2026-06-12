@@ -326,6 +326,16 @@ class WavefunctionGridObservable(Protocol):
     Sources are baked at compile time (Descouvemont eq. 27); both evaluation
     regimes are served by one entry point — the energy-batched regime is
     detected from the ``Spectrum`` rank.
+
+    **Normalization contract:** ψ solves ``(H − E/μ)ψ = φ(a)·H⁻(a)`` — the
+    internal solution driven by the boundary *value* of the incoming wave.
+    Engines that drive with the matched exterior *derivative*
+    ``(i/2)(H⁻′ − S·H⁺′)`` instead differ by the per-channel scalar
+    ``(i/2)(H⁻′ − S·H⁺′)/H⁻`` (the solution is linear in the driving
+    coefficient), plus ``k/√a`` if their coefficients live in ``s = k·r``.
+    The cross-engine acceptance test (``tests/acceptance``) pins this
+    relation to machine precision; conversions belong in the caller, never
+    here.
     """
 
     def __call__(self, spectrum: Spectrum, channel_index: int | None = 0) -> jax.Array:
