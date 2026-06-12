@@ -4,18 +4,21 @@ The public ``Solver`` bundle stores module-level callable objects rather than lo
 closures so it can round-trip through stdlib ``pickle``. This module provides those
 wrappers plus the helper functions that bind compile-time mesh, energy-grid, and
 boundary data to the runtime spectral formulas from ``lax.spectral``.
+
+Every observable is batched over the leading symmetry-block axis (DESIGN.md
+§15.5).  A solver compiled with ``channels=`` is the ``N_b == 1`` case: its
+(unbatched) :class:`Spectrum` is lifted onto a length-1 block axis, the batched
+formula runs, and the block axis is squeezed off the result.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
 
 import jax
 import jax.numpy as jnp
 
-from lax.spectral.interpolation import pade_interpolate
 from lax.spectral.matching import open_channel_smatrix_from_R, phases_from_S
 from lax.spectral.observables import (
     greens_from_spectrum,
@@ -28,7 +31,6 @@ from lax.types import (
     ChannelSpec,
     EigenpairAccessor,
     GreenFunctionObservable,
-    InterpolatorBuilder,
     Mesh,
     RMatrixObservable,
     SpectrumGridObservable,
@@ -36,7 +38,7 @@ from lax.types import (
     WavefunctionObservable,
 )
 
-from .assembly import uniform_mass_factor
+from .assembly import add_block_axis, uniform_block_mass_factor
 
 
 @dataclass(frozen=True)
@@ -45,31 +47,48 @@ class _RMatrixObservable:
 
     channel_radius: float
     mass_factor: float
+    block_mode: bool
 
     def __call__(self, spectrum: Spectrum, energy: float | jax.Array) -> jax.Array:
-        """Evaluate the R-matrix at one energy."""
+        """Evaluate the R-matrix at one energy.
 
-        return cast(
+        Shape ``(N_c, N_c)`` — ``(N_b, N_c, N_c)`` in blocks mode.
+        """
+
+        if not self.block_mode:
+            spectrum = add_block_axis(spectrum)
+        result = cast(
             jax.Array,
-            _RMATRIX_JIT(spectrum, energy, self.channel_radius, self.mass_factor),
+            _RMATRIX_BLOCKS_JIT(spectrum, energy, self.channel_radius, self.mass_factor),
         )
+        return result if self.block_mode else result[0]
 
 
 @dataclass(frozen=True)
 class _SMatrixObservable:
-    """Pickle-safe S-matrix observable on the compile-time energy grid."""
+    """Pickle-safe S-matrix observable on the compile-time energy grid.
+
+    ``boundary`` is always stacked — ``(N_b, N_E, N_c)`` fields, ``N_b == 1``
+    for a ``channels=`` solver.
+    """
 
     energies: jax.Array
     boundary: BoundaryValues
     channel_radius: float
     mass_factor: float
+    block_mode: bool
 
     def __call__(self, spectrum: Spectrum) -> jax.Array:
-        """Evaluate the S-matrix on the compile-time energy grid."""
+        """Evaluate the S-matrix on the compile-time energy grid.
 
-        return cast(
+        Shape ``(N_E, N_c, N_c)`` — ``(N_b, N_E, N_c, N_c)`` in blocks mode.
+        """
+
+        if not self.block_mode:
+            spectrum = add_block_axis(spectrum)
+        result = cast(
             jax.Array,
-            _SMATRIX_JIT(
+            _SMATRIX_BLOCKS_JIT(
                 spectrum,
                 self.energies,
                 self.boundary,
@@ -77,16 +96,21 @@ class _SMatrixObservable:
                 self.mass_factor,
             ),
         )
+        return result if self.block_mode else result[0]
 
 
 @dataclass(frozen=True)
 class _PhasesObservable:
-    """Pickle-safe phase-shift observable on the compile-time energy grid."""
+    """Pickle-safe phase-shift observable on the compile-time energy grid.
+
+    ``boundary`` is always stacked; see :class:`_SMatrixObservable`.
+    """
 
     energies: jax.Array
     boundary: BoundaryValues
     channel_radius: float
     mass_factor: float
+    block_mode: bool
 
     def __call__(self, spectrum: Spectrum) -> jax.Array:
         """Evaluate the phase shifts on the compile-time energy grid.
@@ -94,13 +118,16 @@ class _PhasesObservable:
         Returns
         -------
         jax.Array
-            Shape ``(N_E, N_c)`` in radians.  For a single-channel solver use
-            ``result[:, 0]`` to obtain a 1-D energy curve.
+            Shape ``(N_E, N_c)`` in radians — ``(N_b, N_E, N_c)`` in blocks
+            mode.  For a single-channel solver use ``result[:, 0]`` to obtain
+            a 1-D energy curve.
         """
 
-        return cast(
+        if not self.block_mode:
+            spectrum = add_block_axis(spectrum)
+        result = cast(
             jax.Array,
-            _PHASES_JIT(
+            _PHASES_BLOCKS_JIT(
                 spectrum,
                 self.energies,
                 self.boundary,
@@ -108,6 +135,7 @@ class _PhasesObservable:
                 self.mass_factor,
             ),
         )
+        return result if self.block_mode else result[0]
 
 
 @dataclass(frozen=True)
@@ -115,11 +143,18 @@ class _GreenFunctionObservable:
     """Pickle-safe Green's-function observable."""
 
     mass_factor: float
+    block_mode: bool
 
     def __call__(self, spectrum: Spectrum, energy: float | jax.Array) -> jax.Array:
-        """Evaluate the Green's function at one energy."""
+        """Evaluate the Green's function at one energy.
 
-        return cast(jax.Array, _GREENS_JIT(spectrum, energy, self.mass_factor))
+        Shape ``(M, M)`` — ``(N_b, M, M)`` in blocks mode.
+        """
+
+        if not self.block_mode:
+            spectrum = add_block_axis(spectrum)
+        result = cast(jax.Array, _GREENS_BLOCKS_JIT(spectrum, energy, self.mass_factor))
+        return result if self.block_mode else result[0]
 
 
 @dataclass(frozen=True)
@@ -127,16 +162,28 @@ class _WavefunctionObservable:
     """Pickle-safe internal wavefunction observable."""
 
     mass_factor: float
+    n_blocks: int
+    block_mode: bool
 
     def __call__(
         self, spectrum: Spectrum, energy: float | jax.Array, source: jax.Array
     ) -> jax.Array:
-        """Evaluate the internal wavefunction at one energy."""
+        """Evaluate the internal wavefunction at one energy.
 
-        return cast(
-            jax.Array,
-            _WAVEFUNCTION_JIT(spectrum, energy, source, self.mass_factor),
+        ``source`` is ``(M,)`` — in blocks mode also ``(N_b, M)`` for
+        per-block sources.  Shape ``(M,)`` — ``(N_b, M)`` in blocks mode.
+        """
+
+        if not self.block_mode:
+            spectrum = add_block_axis(spectrum)
+        sources = (
+            jnp.broadcast_to(source, (self.n_blocks, *source.shape)) if source.ndim == 1 else source
         )
+        result = cast(
+            jax.Array,
+            _WAVEFUNCTION_BLOCKS_JIT(spectrum, energy, sources, self.mass_factor),
+        )
+        return result if self.block_mode else result[0]
 
 
 @dataclass(frozen=True)
@@ -162,36 +209,46 @@ class _RMatrixGridObservable:
     energies: jax.Array
     channel_radius: float
     mass_factor_grid: jax.Array
+    block_mode: bool
 
     def __call__(self, spectra: Spectrum) -> jax.Array:
         """Evaluate `R(E_i; spec_i)` across the compile-time energy grid."""
 
-        return cast(
+        if not self.block_mode:
+            spectra = add_block_axis(spectra)
+        result = cast(
             jax.Array,
-            _RMATRIX_GRID_JIT(
+            _RMATRIX_GRID_BLOCKS_JIT(
                 spectra,
                 self.energies,
                 self.channel_radius,
                 self.mass_factor_grid,
             ),
         )
+        return result if self.block_mode else result[0]
 
 
 @dataclass(frozen=True)
 class _SMatrixGridObservable:
-    """Pickle-safe aligned-grid spectral S-matrix observable."""
+    """Pickle-safe aligned-grid spectral S-matrix observable.
+
+    ``boundary`` is always stacked; see :class:`_SMatrixObservable`.
+    """
 
     energies: jax.Array
     boundary: BoundaryValues
     channel_radius: float
     mass_factor_grid: jax.Array
+    block_mode: bool
 
     def __call__(self, spectra: Spectrum) -> jax.Array:
         """Evaluate `S(E_i; spec_i)` across the compile-time energy grid."""
 
-        return cast(
+        if not self.block_mode:
+            spectra = add_block_axis(spectra)
+        result = cast(
             jax.Array,
-            _SMATRIX_GRID_JIT(
+            _SMATRIX_GRID_BLOCKS_JIT(
                 spectra,
                 self.energies,
                 self.boundary,
@@ -199,23 +256,30 @@ class _SMatrixGridObservable:
                 self.mass_factor_grid,
             ),
         )
+        return result if self.block_mode else result[0]
 
 
 @dataclass(frozen=True)
 class _PhasesGridObservable:
-    """Pickle-safe aligned-grid spectral phase-shift observable."""
+    """Pickle-safe aligned-grid spectral phase-shift observable.
+
+    ``boundary`` is always stacked; see :class:`_SMatrixObservable`.
+    """
 
     energies: jax.Array
     boundary: BoundaryValues
     channel_radius: float
     mass_factor_grid: jax.Array
+    block_mode: bool
 
     def __call__(self, spectra: Spectrum) -> jax.Array:
         """Evaluate `δ(E_i; spec_i)` across the compile-time energy grid."""
 
-        return cast(
+        if not self.block_mode:
+            spectra = add_block_axis(spectra)
+        result = cast(
             jax.Array,
-            _PHASES_GRID_JIT(
+            _PHASES_GRID_BLOCKS_JIT(
                 spectra,
                 self.energies,
                 self.boundary,
@@ -223,29 +287,15 @@ class _PhasesGridObservable:
                 self.mass_factor_grid,
             ),
         )
-
-
-@dataclass(frozen=True)
-class _InterpolatorBuilder:
-    """Pickle-safe Padé interpolation builder bound to one energy grid."""
-
-    energies: jax.Array
-
-    def __call__(
-        self,
-        values: jax.Array,
-        order: tuple[int, int] | None = None,
-    ) -> Callable[[float | jax.Array], jax.Array]:
-        """Build a Padé interpolator over the compile-time energy grid."""
-
-        return pade_interpolate(values, self.energies, order=order)
+        return result if self.block_mode else result[0]
 
 
 def bind_observables(
     mesh: Mesh,
-    channels: tuple[ChannelSpec, ...],
+    blocks: tuple[tuple[ChannelSpec, ...], ...],
     energies: jax.Array,
     boundary: BoundaryValues | None,
+    block_mode: bool = False,
 ) -> tuple[
     RMatrixObservable,
     SpectrumObservable | None,
@@ -260,14 +310,19 @@ def bind_observables(
     ----------
     mesh
         Compiled mesh cache containing the channel radius and basis boundary values.
-    channels
-        Channel layout baked into the solver.
+    blocks
+        ``N_b`` symmetry blocks of ``N_c`` channels each.  A ``channels=``
+        compile passes the single block ``(channels,)``.
     energies
         Compile-time energy grid. It is stored on matching-dependent observables even
         though pointwise R and Green's functions can be evaluated at arbitrary energy.
     boundary
-        Compile-time boundary values for matching-dependent observables. When absent,
-        only spectrum-only observables are returned.
+        Compile-time boundary values for matching-dependent observables —
+        mode-appropriate shape (stacked iff ``block_mode``). When absent, only
+        spectrum-only observables are returned.
+    block_mode
+        ``True`` for a ``blocks=`` compile: outputs keep the leading
+        ``(N_b,)`` axis.
 
     Returns
     -------
@@ -277,16 +332,32 @@ def bind_observables(
     """
 
     channel_radius = mesh.scale
-    mass_factor = _uniform_mass_factor(channels)
-    rmatrix = _RMatrixObservable(channel_radius=channel_radius, mass_factor=mass_factor)
-    smatrix, phases = _matching_observables(
-        energies=energies,
-        boundary=boundary,
-        channel_radius=channel_radius,
-        mass_factor=mass_factor,
+    mass_factor = uniform_block_mass_factor(blocks, context="spectral observable path")
+    rmatrix = _RMatrixObservable(
+        channel_radius=channel_radius, mass_factor=mass_factor, block_mode=block_mode
     )
-    greens = _GreenFunctionObservable(mass_factor=mass_factor)
-    wavefunction = _WavefunctionObservable(mass_factor=mass_factor)
+    smatrix: SpectrumObservable | None = None
+    phases: SpectrumObservable | None = None
+    if boundary is not None:
+        boundary_blocks = boundary if block_mode else add_block_axis(boundary)
+        smatrix = _SMatrixObservable(
+            energies=energies,
+            boundary=boundary_blocks,
+            channel_radius=channel_radius,
+            mass_factor=mass_factor,
+            block_mode=block_mode,
+        )
+        phases = _PhasesObservable(
+            energies=energies,
+            boundary=boundary_blocks,
+            channel_radius=channel_radius,
+            mass_factor=mass_factor,
+            block_mode=block_mode,
+        )
+    greens = _GreenFunctionObservable(mass_factor=mass_factor, block_mode=block_mode)
+    wavefunction = _WavefunctionObservable(
+        mass_factor=mass_factor, n_blocks=len(blocks), block_mode=block_mode
+    )
     eigh = _EigenpairAccessor()
 
     return rmatrix, smatrix, phases, greens, wavefunction, eigh
@@ -294,10 +365,11 @@ def bind_observables(
 
 def bind_grid_observables(
     mesh: Mesh,
-    channels: tuple[ChannelSpec, ...],
+    blocks: tuple[tuple[ChannelSpec, ...], ...],
     energies: jax.Array,
     boundary: BoundaryValues | None,
     mass_factor_grid: jax.Array | None = None,
+    block_mode: bool = False,
 ) -> tuple[SpectrumGridObservable, SpectrumGridObservable | None, SpectrumGridObservable | None]:
     """Bind aligned-grid spectral observables for energy-dependent workflows.
 
@@ -305,17 +377,21 @@ def bind_grid_observables(
     ----------
     mesh
         Compiled mesh cache.
-    channels
-        Channel layout baked into the solver.
+    blocks
+        ``N_b`` symmetry blocks of ``N_c`` channels each.
     energies
         Compile-time energy grid aligned with the batched spectra.
     boundary
-        Compile-time matching data. When absent, only the aligned-grid R-matrix
+        Compile-time matching data — mode-appropriate shape (stacked iff
+        ``block_mode``). When absent, only the aligned-grid R-matrix
         observable is returned.
     mass_factor_grid
         Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``, or ``None``
         for a constant mass factor.  When provided the spectral denominators
         ``ε_k − E_i/μ(E_i)`` use the correct per-energy value.
+    block_mode
+        ``True`` for a ``blocks=`` compile: outputs keep the leading
+        ``(N_b,)`` axis.
 
     Returns
     -------
@@ -325,7 +401,7 @@ def bind_grid_observables(
     """
 
     channel_radius = mesh.scale
-    mass_factor = _uniform_mass_factor(channels)
+    mass_factor = uniform_block_mass_factor(blocks, context="spectral observable path")
     _mfg = (
         jnp.full(len(energies), mass_factor)
         if mass_factor_grid is None
@@ -335,82 +411,27 @@ def bind_grid_observables(
         energies=energies,
         channel_radius=channel_radius,
         mass_factor_grid=_mfg,
+        block_mode=block_mode,
     )
-    smatrix_grid, phases_grid = _matching_grid_observables(
-        energies=energies,
-        boundary=boundary,
-        channel_radius=channel_radius,
-        mass_factor_grid=_mfg,
-    )
+    smatrix_grid: SpectrumGridObservable | None = None
+    phases_grid: SpectrumGridObservable | None = None
+    if boundary is not None:
+        boundary_blocks = boundary if block_mode else add_block_axis(boundary)
+        smatrix_grid = _SMatrixGridObservable(
+            energies=energies,
+            boundary=boundary_blocks,
+            channel_radius=channel_radius,
+            mass_factor_grid=_mfg,
+            block_mode=block_mode,
+        )
+        phases_grid = _PhasesGridObservable(
+            energies=energies,
+            boundary=boundary_blocks,
+            channel_radius=channel_radius,
+            mass_factor_grid=_mfg,
+            block_mode=block_mode,
+        )
     return rmatrix_grid, smatrix_grid, phases_grid
-
-
-def bind_interpolators(
-    energies: jax.Array,
-) -> tuple[InterpolatorBuilder, InterpolatorBuilder, InterpolatorBuilder]:
-    """Bind Padé interpolation builders to one compile-time energy grid.
-
-    A single builder type serves the R-matrix, S-matrix, and phase-shift
-    interpolation paths; the three returned values are aliases kept for public API
-    clarity on the ``Solver`` bundle.
-    """
-
-    builder = _InterpolatorBuilder(energies=energies)
-    return builder, builder, builder
-
-
-def _matching_observables(
-    *,
-    energies: jax.Array,
-    boundary: BoundaryValues | None,
-    channel_radius: float,
-    mass_factor: float,
-) -> tuple[SpectrumObservable | None, SpectrumObservable | None]:
-    """Create matching-dependent observables when boundary data are available."""
-
-    if boundary is None:
-        return None, None
-    return (
-        _SMatrixObservable(
-            energies=energies,
-            boundary=boundary,
-            channel_radius=channel_radius,
-            mass_factor=mass_factor,
-        ),
-        _PhasesObservable(
-            energies=energies,
-            boundary=boundary,
-            channel_radius=channel_radius,
-            mass_factor=mass_factor,
-        ),
-    )
-
-
-def _matching_grid_observables(
-    *,
-    energies: jax.Array,
-    boundary: BoundaryValues | None,
-    channel_radius: float,
-    mass_factor_grid: jax.Array,
-) -> tuple[SpectrumGridObservable | None, SpectrumGridObservable | None]:
-    """Create aligned-grid matching observables when boundary data are available."""
-
-    if boundary is None:
-        return None, None
-    return (
-        _SMatrixGridObservable(
-            energies=energies,
-            boundary=boundary,
-            channel_radius=channel_radius,
-            mass_factor_grid=mass_factor_grid,
-        ),
-        _PhasesGridObservable(
-            energies=energies,
-            boundary=boundary,
-            channel_radius=channel_radius,
-            mass_factor_grid=mass_factor_grid,
-        ),
-    )
 
 
 def _rmatrix(
@@ -458,8 +479,6 @@ def _smatrix(
         S-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``.
     """
 
-    wave_numbers = _boundary_wave_numbers(boundary)
-
     def one_energy(
         energy: jax.Array,
         h_plus: jax.Array,
@@ -479,7 +498,7 @@ def _smatrix(
         boundary.H_plus_p,
         boundary.H_minus_p,
         boundary.is_open,
-        wave_numbers,
+        boundary.k,
     )
     return result
 
@@ -561,8 +580,6 @@ def _smatrix_grid(
 ) -> jax.Array:
     """Return aligned-grid ``S(E_i; spec_i)`` samples."""
 
-    wave_numbers = _boundary_wave_numbers(boundary)
-
     def one_energy(
         spectrum: Spectrum,
         energy: jax.Array,
@@ -585,7 +602,7 @@ def _smatrix_grid(
         boundary.H_plus_p,
         boundary.H_minus_p,
         boundary.is_open,
-        wave_numbers,
+        boundary.k,
         mass_factor_grid,
     )
 
@@ -604,37 +621,161 @@ def _phases_grid(
     )
 
 
-_RMATRIX_JIT = jax.jit(
-    _rmatrix,
-    static_argnames=("channel_radius", "mass_factor"),
-)
-_SMATRIX_JIT = jax.jit(
-    _smatrix,
-    static_argnames=("channel_radius", "mass_factor"),
-)
-_PHASES_JIT = jax.jit(
-    _phases,
-    static_argnames=("channel_radius", "mass_factor"),
-)
-_GREENS_JIT = jax.jit(
-    _greens,
-    static_argnames=("mass_factor",),
-)
-_WAVEFUNCTION_JIT = jax.jit(
-    _wavefunction,
-    static_argnames=("mass_factor",),
-)
+# --------------------------------------------------------------------------
+# Symmetry-block batched layers (DESIGN.md §15.5): thin jax.vmap wrappers over
+# the single-block formulas above.
+
+
+def _rmatrix_blocks(
+    spectra: Spectrum,
+    energy: float | jax.Array,
+    channel_radius: float,
+    mass_factor: float,
+) -> jax.Array:
+    """Return per-block spectral R-matrices at one energy, shape ``(N_b, N_c, N_c)``."""
+
+    def one_block(spectrum: Spectrum) -> jax.Array:
+        return _rmatrix(spectrum, energy, channel_radius, mass_factor)
+
+    return jax.vmap(one_block)(spectra)
+
+
+def _smatrix_blocks(
+    spectra: Spectrum,
+    energies: jax.Array,
+    boundary: BoundaryValues,
+    channel_radius: float,
+    mass_factor: float,
+) -> jax.Array:
+    """Return per-block S-matrices, shape ``(N_b, N_E, N_c, N_c)``.
+
+    The block-batched :class:`Spectrum` and the ``(N_b,)``-stacked
+    :class:`BoundaryValues` pytrees vmap jointly over the block axis.
+    """
+
+    def one_block(spectrum: Spectrum, boundary_b: BoundaryValues) -> jax.Array:
+        return _smatrix(spectrum, energies, boundary_b, channel_radius, mass_factor)
+
+    return jax.vmap(one_block)(spectra, boundary)
+
+
+def _phases_blocks(
+    spectra: Spectrum,
+    energies: jax.Array,
+    boundary: BoundaryValues,
+    channel_radius: float,
+    mass_factor: float,
+) -> jax.Array:
+    """Return per-block phase shifts, shape ``(N_b, N_E, N_c)``."""
+
+    def one_block(spectrum: Spectrum, boundary_b: BoundaryValues) -> jax.Array:
+        return _phases(spectrum, energies, boundary_b, channel_radius, mass_factor)
+
+    return jax.vmap(one_block)(spectra, boundary)
+
+
+def _greens_blocks(
+    spectra: Spectrum,
+    energy: float | jax.Array,
+    mass_factor: float,
+) -> jax.Array:
+    """Return per-block Green's functions at one energy, shape ``(N_b, M, M)``."""
+
+    def one_block(spectrum: Spectrum) -> jax.Array:
+        return _greens(spectrum, energy, mass_factor)
+
+    return jax.vmap(one_block)(spectra)
+
+
+def _wavefunction_blocks(
+    spectra: Spectrum,
+    energy: float | jax.Array,
+    sources: jax.Array,
+    mass_factor: float,
+) -> jax.Array:
+    """Return per-block internal wavefunctions at one energy, shape ``(N_b, M)``."""
+
+    def one_block(spectrum: Spectrum, source: jax.Array) -> jax.Array:
+        return _wavefunction(spectrum, energy, source, mass_factor)
+
+    return jax.vmap(one_block)(spectra, sources)
+
+
+def _rmatrix_grid_blocks(
+    spectra: Spectrum,
+    energies: jax.Array,
+    channel_radius: float,
+    mass_factor_grid: jax.Array,
+) -> jax.Array:
+    """Return per-block aligned-grid R samples, shape ``(N_b, N_E, N_c, N_c)``."""
+
+    def one_block(spectra_b: Spectrum) -> jax.Array:
+        return _rmatrix_grid(spectra_b, energies, channel_radius, mass_factor_grid)
+
+    return jax.vmap(one_block)(spectra)
+
+
+def _smatrix_grid_blocks(
+    spectra: Spectrum,
+    energies: jax.Array,
+    boundary: BoundaryValues,
+    channel_radius: float,
+    mass_factor_grid: jax.Array,
+) -> jax.Array:
+    """Return per-block aligned-grid S samples, shape ``(N_b, N_E, N_c, N_c)``."""
+
+    def one_block(spectra_b: Spectrum, boundary_b: BoundaryValues) -> jax.Array:
+        return _smatrix_grid(spectra_b, energies, boundary_b, channel_radius, mass_factor_grid)
+
+    return jax.vmap(one_block)(spectra, boundary)
+
+
+def _phases_grid_blocks(
+    spectra: Spectrum,
+    energies: jax.Array,
+    boundary: BoundaryValues,
+    channel_radius: float,
+    mass_factor_grid: jax.Array,
+) -> jax.Array:
+    """Return per-block aligned-grid phase shifts, shape ``(N_b, N_E, N_c)``."""
+
+    def one_block(spectra_b: Spectrum, boundary_b: BoundaryValues) -> jax.Array:
+        return _phases_grid(spectra_b, energies, boundary_b, channel_radius, mass_factor_grid)
+
+    return jax.vmap(one_block)(spectra, boundary)
+
+
 _EIGH_JIT = jax.jit(_eigh)
-_RMATRIX_GRID_JIT = jax.jit(
-    _rmatrix_grid,
+_RMATRIX_BLOCKS_JIT = jax.jit(
+    _rmatrix_blocks,
+    static_argnames=("channel_radius", "mass_factor"),
+)
+_SMATRIX_BLOCKS_JIT = jax.jit(
+    _smatrix_blocks,
+    static_argnames=("channel_radius", "mass_factor"),
+)
+_PHASES_BLOCKS_JIT = jax.jit(
+    _phases_blocks,
+    static_argnames=("channel_radius", "mass_factor"),
+)
+_GREENS_BLOCKS_JIT = jax.jit(
+    _greens_blocks,
+    static_argnames=("mass_factor",),
+)
+_WAVEFUNCTION_BLOCKS_JIT = jax.jit(
+    _wavefunction_blocks,
+    static_argnames=("mass_factor",),
+)
+_RMATRIX_GRID_BLOCKS_JIT = jax.jit(
+    _rmatrix_grid_blocks,
     static_argnames=("channel_radius",),
 )
-_SMATRIX_GRID_JIT = jax.jit(
-    _smatrix_grid,
+_SMATRIX_GRID_BLOCKS_JIT = jax.jit(
+    _smatrix_grid_blocks,
     static_argnames=("channel_radius",),
 )
-_PHASES_GRID_JIT = jax.jit(
-    _phases_grid,
+_PHASES_GRID_BLOCKS_JIT = jax.jit(
+    _phases_grid_blocks,
     static_argnames=("channel_radius",),
 )
 
@@ -666,20 +807,7 @@ def _match_one_energy(
     return open_channel_smatrix_from_R(rmatrix, boundary_slice)
 
 
-def _boundary_wave_numbers(boundary: BoundaryValues) -> jax.Array:
-    """Return wave numbers for matching."""
-
-    return boundary.k
-
-
-def _uniform_mass_factor(channels: tuple[ChannelSpec, ...]) -> float:
-    """Return the shared mass factor expected by the spectral observables."""
-
-    return uniform_mass_factor(channels, context="spectral observable path")
-
-
 __all__ = [
     "bind_grid_observables",
-    "bind_interpolators",
     "bind_observables",
 ]

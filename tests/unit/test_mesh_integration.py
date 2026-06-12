@@ -28,7 +28,9 @@ def _nodal_coefficients(mesh: object, profile: np.ndarray) -> np.ndarray:
 
 
 @pytest.mark.parametrize("regularization", ["x", "x(1-x)", "x^3/2"])
-def test_legendre_mesh_quadrature_integrates_polynomials_exactly(regularization: str) -> None:
+def test_legendre_mesh_quadrature_integrates_polynomials_exactly(
+    regularization: str,
+) -> None:
     """Finite-interval Legendre meshes integrate low-degree polynomials exactly."""
 
     mesh, _ = build_mesh("legendre", regularization, n=6, scale=3.0, operators=set())

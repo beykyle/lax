@@ -38,7 +38,7 @@ def test_make_rmatrix_direct_kernel_matches_manual_linear_solve() -> None:
     kernel = make_rmatrix_direct_kernel(
         solver.mesh,
         solver.operators,
-        solver.channels,
+        (solver.channels,),
         solver.energies,
         None,
     )
@@ -77,9 +77,6 @@ def test_compile_exposes_direct_rmatrix_kernel() -> None:
     assert solver.smatrix_direct is not None
     assert solver.phases_direct is not None
     assert solver.local_potential is not None
-    assert solver.interpolate_rmatrix is not None
-    assert solver.interpolate_smatrix is not None
-    assert solver.interpolate_phases is not None
     assert solver.spectrum is None
 
 

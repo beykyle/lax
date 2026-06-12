@@ -370,3 +370,60 @@ def test_local_potential_energy_dependent_carries_energy_axis() -> None:
     )
     assert interaction.energy_dependent
     assert interaction.block.shape[0] == len(solver.energies)
+
+
+def test_bare_term_equals_explicit_unit_coupling_single_channel() -> None:
+    """Single-channel sugar: a bare form factor equals its (g, [[1.0]]) form."""
+
+    solver = _make_mesh_channels()
+    assert solver.interaction_from_array is not None
+    assert solver.interaction_from_funcs is not None
+    rng = np.random.default_rng(11)
+    n = solver.mesh.n
+    g_local = jnp.asarray(rng.normal(size=(n,)))
+    g_nonlocal = jnp.asarray(rng.normal(size=(n, n)))
+    g_nonlocal = 0.5 * (g_nonlocal + g_nonlocal.T)
+    unit = np.ones((1, 1))
+
+    bare = solver.interaction_from_array(local=[g_local], nonlocal_=[g_nonlocal])
+    explicit = solver.interaction_from_array(
+        local=[(g_local, unit)], nonlocal_=[(g_nonlocal, unit)]
+    )
+    np.testing.assert_array_equal(np.asarray(bare.block), np.asarray(explicit.block))
+
+    def g_fn(r: jnp.ndarray) -> jnp.ndarray:
+        return -3.0 * jnp.exp(-r)
+
+    bare_funcs = solver.interaction_from_funcs(local=[g_fn])
+    explicit_funcs = solver.interaction_from_funcs(local=[(g_fn, unit)])
+    np.testing.assert_array_equal(np.asarray(bare_funcs.block), np.asarray(explicit_funcs.block))
+
+
+def test_bare_term_raises_for_multichannel() -> None:
+    """A bare term requires an explicit coupling matrix when N_c > 1."""
+
+    channels = (
+        lm.ChannelSpec(l=0, threshold=0.0, mass_factor=41.472),
+        lm.ChannelSpec(l=2, threshold=1.0, mass_factor=41.472),
+    )
+    solver = lm.compile(
+        mesh=lm.MeshSpec("legendre", "x", n=6, scale=5.0),
+        channels=channels,
+        solvers=("rmatrix_direct",),
+        energies=jnp.asarray([1.0, 3.0]),
+    )
+    assert solver.interaction_from_array is not None
+    assert solver.interaction_from_funcs is not None
+    g = jnp.ones((solver.mesh.n,))
+    with pytest.raises(ValueError, match="coupling is required for 2-channel"):
+        solver.interaction_from_array(local=[g])
+    with pytest.raises(ValueError, match="coupling is required for 2-channel"):
+        solver.interaction_from_funcs(nonlocal_=[lambda ri, rj: jnp.zeros_like(ri)])
+
+
+def test_term_tuple_of_wrong_length_raises() -> None:
+    solver = _make_mesh_channels()
+    assert solver.interaction_from_array is not None
+    g = jnp.ones((solver.mesh.n,))
+    with pytest.raises(ValueError, match="must be \\(form_factor, coupling\\)"):
+        solver.interaction_from_array(local=[(g, np.ones((1, 1)), 3.0)])

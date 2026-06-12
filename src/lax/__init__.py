@@ -2,7 +2,7 @@
 lax — JAX-compiled Lagrange-mesh solvers.
 
 Import this package before importing jax.numpy directly so the x64 config
-is applied before JAX's first array creation (see DESIGN.md §C.10).
+is applied before JAX's first array creation (see DESIGN.md §C.9).
 
 Note: ``lax.compile`` shadows Python's built-in ``compile``.  Avoid
 ``from lax import compile`` in modules that also need the built-in.

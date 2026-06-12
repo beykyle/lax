@@ -91,7 +91,9 @@ class RotorCoupledOpticalModel:
     channels: tuple[RotorChannel, ...]
 
 
-def channels_from_rotor_model(model: RotorCoupledOpticalModel) -> tuple[ChannelSpec, ...]:
+def channels_from_rotor_model(
+    model: RotorCoupledOpticalModel,
+) -> tuple[ChannelSpec, ...]:
     """Return :class:`~lax.types.ChannelSpec` objects for a rotor model.
 
     Parameters

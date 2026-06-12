@@ -173,7 +173,9 @@ def make_fourier(transform_matrices: TransformMatrices) -> FourierTransform:
     return _FourierProjection(fourier_matrices=transform_matrices.F_momentum)
 
 
-def make_double_fourier(transform_matrices: TransformMatrices) -> DoubleFourierTransform:
+def make_double_fourier(
+    transform_matrices: TransformMatrices,
+) -> DoubleFourierTransform:
     """Return a JIT-compiled double Fourier-Bessel transform for mesh kernels.
 
     Parameters

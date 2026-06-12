@@ -10,13 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import DTypeLike
 
-from lax.boundary import compute_boundary_values
+from lax.boundary import compute_boundary_values_blocks
 from lax.meshes import build_mesh
 from lax.operators.interaction import (
     make_interaction_from_array,
@@ -26,7 +27,6 @@ from lax.operators.interaction import (
 )
 from lax.solvers import (
     bind_grid_observables,
-    bind_interpolators,
     bind_observables,
     make_direct_wavefunction_kernel,
     make_phases_direct_observable,
@@ -34,6 +34,7 @@ from lax.solvers import (
     make_smatrix_direct_observable,
     make_spectrum_kernel,
 )
+from lax.solvers.assembly import take_block0
 from lax.transforms import (
     compute_B_grid,
     compute_F_momentum,
@@ -54,7 +55,6 @@ from lax.types import (
     GridMatrixTransform,
     GridVectorTransform,
     Integrator,
-    InterpolatorBuilder,
     Mesh,
     MeshSpec,
     Method,
@@ -83,6 +83,9 @@ class _CompileRequest:
     needs_spectrum: bool
     needs_boundary: bool
     keep_eigenvectors: bool
+    # The symmetry-block set (DESIGN.md §15.5), or None for a channels=
+    # compile.  When set, `channels` is the template block block_groups[0].
+    block_groups: tuple[tuple[ChannelSpec, ...], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -121,15 +124,13 @@ class _ObservableBundle:
     interaction_from_funcs: Callable[..., Any] | None
     local_potential: Callable[..., Any] | None
     nonlocal_potential: Callable[..., Any] | None
-    interpolate_rmatrix: InterpolatorBuilder | None
-    interpolate_smatrix: InterpolatorBuilder | None
-    interpolate_phases: InterpolatorBuilder | None
 
 
 def compile(
     *,
     mesh: MeshSpec,
-    channels: Iterable[ChannelSpec],
+    channels: Iterable[ChannelSpec] | None = None,
+    blocks: Iterable[Iterable[ChannelSpec]] | None = None,
     operators: Iterable[str] = ("T+L",),
     solvers: Iterable[str] = ("spectrum", "rmatrix", "smatrix", "phases"),
     energies: jax.Array | None = None,
@@ -141,6 +142,8 @@ def compile(
     z1z2: tuple[int, int] | None = None,
     dps: int = 40,
     mass_factor_grid: jax.Array | None = None,
+    dtype: DTypeLike = jnp.float64,
+    device: Any = None,
 ) -> Solver:
     """Build a compiled solver bundle for one mesh/channel definition.
 
@@ -154,7 +157,18 @@ def compile(
         User-facing mesh specification. The chosen mesh family, regularization,
         scale, and any mesh-specific extras are resolved at compile time.
     channels
-        Channel definitions baked into the compiled solver structure.
+        Channel definitions for a single coupled-channel block, baked into the
+        compiled solver structure.  Mutually exclusive with ``blocks``;
+        exactly one must be given.
+    blocks
+        A batch of same-shaped symmetry blocks (independent ``(J, π)`` groups,
+        partial waves, …); see DESIGN.md §15.5.  Each inner group must have
+        the same length ``N_c``.  The compiled solver carries the block set on
+        ``solver.blocks``, the boundary values gain a leading ``(N_b,)`` axis,
+        and every observable output gains a corresponding leading block axis.
+        Partial-wave batching is the ``N_c == 1`` case:
+        ``blocks=[[ChannelSpec(l=0, …)], [ChannelSpec(l=1, …)], …]``.
+        Mutually exclusive with ``channels``.
     operators
         Compile-time operator matrices to precompute. ``"T+L"`` is injected
         automatically whenever the requested solver path needs it.
@@ -167,11 +181,11 @@ def compile(
         Compile-time energy grid used for boundary-value-dependent observables and
         aligned-grid workflows.
     energy_dependent
-        Whether the caller intends to provide an energy-dependent potential on the
-        compile-time energy grid.  When ``True``, call
-        ``jax.vmap(solver.spectrum)(V_grid)`` over the energy axis to get a
-        batched ``Spectrum``, then use ``solver.phases_grid(spectra)`` and the
-        ``solver.interpolate_*`` builders for off-grid evaluation.
+        Whether the caller intends to provide an energy-dependent potential on
+        the compile-time energy grid.  Build the potential with
+        ``energy_dependent=True`` — ``solver.spectrum`` dispatches the energy
+        axis internally and returns a batched ``Spectrum`` — then use
+        ``solver.phases_grid(spectra)`` for the aligned-grid observables.
     method
         Explicit solver method. When omitted, the method is chosen from
         ``V_is_complex`` and the active JAX backend.
@@ -203,6 +217,19 @@ def compile(
            ``(energy, channel)`` pair use ``mass_factor_grid[ie, ic]``.
         2. **Aligned-grid direct observables** — the Hamiltonian is assembled
            with the per-energy per-channel mass factor at each grid point.
+    dtype
+        Floating-point precision for the baked arrays (mesh, operators,
+        boundary values, energy grid, transforms).  Default ``jnp.float64``;
+        complex caches use the matching complex dtype (``complex64`` for
+        ``float32``).  x64 itself is enabled globally via ``jax.config``;
+        ``dtype`` only selects the precision of the compile-time caches.
+        Runtime kernels compute in the promoted dtype of the baked arrays and
+        the supplied :class:`~lax.Interaction` — build interactions through the
+        solver's own builders to stay in the requested precision.
+    device
+        Optional device (or device-platform string such as ``"cpu"``/``"gpu"``)
+        on which to place the compiled solver's cached arrays via
+        ``jax.device_put``.  ``None`` keeps JAX's default placement.
 
     Returns
     -------
@@ -213,6 +240,7 @@ def compile(
 
     request = _resolve_compile_request(
         channels=channels,
+        blocks=blocks,
         operators=operators,
         solvers=solvers,
         energies=energies,
@@ -220,6 +248,12 @@ def compile(
         method=method,
         V_is_complex=V_is_complex,
     )
+    if request.block_groups is not None and momenta is not None:
+        msg = (
+            "`momenta` Fourier transforms are not supported with `blocks=`; "
+            "compile per-block solvers for momentum-space work."
+        )
+        raise ValueError(msg)
     mesh_data, operator_matrices = _build_solver_mesh(
         mesh=mesh,
         operators=request.operators,
@@ -227,6 +261,7 @@ def compile(
         method=request.method,
         grid=grid,
         momenta=momenta,
+        in_blocks_mode=request.block_groups is not None,
     )
     mass_factor_grid_np: np.ndarray | None
     if mass_factor_grid is not None:
@@ -234,20 +269,35 @@ def compile(
             msg = "`energies` is required when `mass_factor_grid` is provided."
             raise ValueError(msg)
         n_e = len(np.asarray(energies))
-        n_c = len(tuple(channels))
+        n_c = len(request.channels)
         mass_factor_grid_np = _broadcast_mass_factor_grid(
             np.asarray(mass_factor_grid, dtype=np.float64), n_e, n_c
         )
     else:
         mass_factor_grid_np = None
+    # Everything downstream runs the batched (blocks-always) machinery: a
+    # channels= compile is the single block (channels,) with block_mode=False.
+    block_mode = request.block_groups is not None
+    blocks_resolved = request.block_groups if block_mode else (request.channels,)
+    assert blocks_resolved is not None
     boundary, energies_array = _prepare_boundary_data(
-        channels=request.channels,
+        blocks=blocks_resolved,
+        block_mode=block_mode,
         energies=energies,
         channel_radius=mesh.scale,
         z1z2=z1z2,
         dps=dps,
         mass_factor_grid=mass_factor_grid_np,
     )
+    # Cast and place every compile-time cache before any kernel/observable
+    # factory runs, so all derived arrays inherit dtype/device (§14.1).
+    target_device = _resolve_device(device)
+    mesh_data = _finalize_arrays(mesh_data, dtype, target_device)
+    operator_matrices = _finalize_arrays(operator_matrices, dtype, target_device)
+    boundary = _finalize_arrays(boundary, dtype, target_device)
+    energies_array = _finalize_arrays(energies_array, dtype, target_device)
+    grid = _finalize_arrays(grid, dtype, target_device) if grid is not None else None
+    momenta = _finalize_arrays(momenta, dtype, target_device) if momenta is not None else None
     transforms = _prepare_transforms(
         mesh=mesh_data,
         channels=request.channels,
@@ -255,10 +305,14 @@ def compile(
         momenta=momenta,
     )
     mass_factor_grid_jax = (
-        jnp.asarray(mass_factor_grid_np) if mass_factor_grid_np is not None else None
+        _finalize_arrays(jnp.asarray(mass_factor_grid_np), dtype, target_device)
+        if mass_factor_grid_np is not None
+        else None
     )
     observables = _bind_solver_observables(
         request=request,
+        blocks=blocks_resolved,
+        block_mode=block_mode,
         mesh=mesh_data,
         operators=operator_matrices,
         energies=energies_array,
@@ -280,7 +334,8 @@ def compile(
 
 def _resolve_compile_request(
     *,
-    channels: Iterable[ChannelSpec],
+    channels: Iterable[ChannelSpec] | None,
+    blocks: Iterable[Iterable[ChannelSpec]] | None,
     operators: Iterable[str],
     solvers: Iterable[str],
     energies: jax.Array | None,
@@ -295,7 +350,25 @@ def _resolve_compile_request(
     path easier to read and keeps feature gating consistent.
     """
 
-    channels_tuple = tuple(channels)
+    if (channels is None) == (blocks is None):
+        msg = "Pass exactly one of `channels` or `blocks` to lax.compile()."
+        raise ValueError(msg)
+    block_groups: tuple[tuple[ChannelSpec, ...], ...] | None
+    if blocks is not None:
+        block_groups = tuple(tuple(group) for group in blocks)
+        if not block_groups:
+            msg = "`blocks` must contain at least one symmetry block."
+            raise ValueError(msg)
+        n_c = len(block_groups[0])
+        if n_c == 0 or any(len(group) != n_c for group in block_groups):
+            msg = "All `blocks` must share the same non-zero channel shape N_c."
+            raise ValueError(msg)
+        # The template block: shared shape data (N_c, mesh pairing) comes from
+        # here; per-block centrifugal/threshold/μ rows are stacked separately.
+        channels_tuple = block_groups[0]
+    else:
+        block_groups = None
+        channels_tuple = tuple(cast(Iterable[ChannelSpec], channels))
     operators_set = set(operators)
     solvers_set = frozenset(solvers)
 
@@ -307,7 +380,10 @@ def _resolve_compile_request(
     # "wavefunction" is served by the spectral path under eigh/eig, but by the
     # direct wavefunction_direct kernel under linear_solve (§14, Example 16.8).
     wants_wavefunction = "wavefunction" in solvers_set
-    wavefunction_via_spectrum = wants_wavefunction and selected_method in {"eigh", "eig"}
+    wavefunction_via_spectrum = wants_wavefunction and selected_method in {
+        "eigh",
+        "eig",
+    }
     wavefunction_via_direct = wants_wavefunction and selected_method == "linear_solve"
 
     needs_spectrum = (
@@ -334,6 +410,7 @@ def _resolve_compile_request(
         needs_spectrum=needs_spectrum,
         needs_boundary=needs_boundary,
         keep_eigenvectors=bool(solvers_set & {"greens"}) or wavefunction_via_spectrum,
+        block_groups=block_groups,
     )
 
 
@@ -345,6 +422,7 @@ def _build_solver_mesh(
     method: Method,
     grid: jax.Array | None,
     momenta: jax.Array | None,
+    in_blocks_mode: bool = False,
 ) -> tuple[Mesh, OperatorMatrices]:
     """Build mesh/operator caches and reject unsupported feature combinations."""
 
@@ -356,6 +434,12 @@ def _build_solver_mesh(
         operators=set(operators),
         **mesh.extras,
     )
+    if mesh_data.n_intervals > 1 and in_blocks_mode:
+        msg = (
+            "Symmetry-block batching (`blocks=`) is not supported on propagated "
+            "meshes; compile per-block solvers instead."
+        )
+        raise ValueError(msg)
     if mesh_data.n_intervals > 1 and needs_spectrum:
         msg = (
             "Subinterval propagation is defined only for local potentials on the direct "
@@ -388,14 +472,20 @@ def _build_solver_mesh(
 
 def _prepare_boundary_data(
     *,
-    channels: tuple[ChannelSpec, ...],
+    blocks: tuple[tuple[ChannelSpec, ...], ...],
+    block_mode: bool,
     energies: jax.Array | None,
     channel_radius: float,
     z1z2: tuple[int, int] | None,
     dps: int,
     mass_factor_grid: np.ndarray | None = None,
 ) -> tuple[BoundaryValues | None, jax.Array]:
-    """Prepare compile-time boundary values and the canonical energy-grid array."""
+    """Prepare compile-time boundary values and the canonical energy-grid array.
+
+    The boundary values are always computed stacked per symmetry block on a
+    leading ``(N_b,)`` axis (DESIGN.md §15.5); for a ``channels=`` compile the
+    ``N_b == 1`` axis is squeezed off for the public ``Solver.boundary`` shape.
+    """
 
     if energies is None:
         # The solver always stores an energy array so downstream code can rely on a
@@ -404,14 +494,16 @@ def _prepare_boundary_data(
         return None, jnp.asarray(empty_energies)
 
     energies_np = np.asarray(energies)
-    boundary = compute_boundary_values(
-        channels=channels,
+    boundary = compute_boundary_values_blocks(
+        block_groups=blocks,
         energies=energies_np,
         channel_radius=channel_radius,
         z1z2=z1z2,
         dps=dps,
         mass_factor_grid=mass_factor_grid,
     )
+    if not block_mode:
+        boundary = take_block0(boundary)
     return boundary, jnp.asarray(energies_np)
 
 
@@ -477,6 +569,8 @@ def _prepare_transforms(
 def _bind_solver_observables(
     *,
     request: _CompileRequest,
+    blocks: tuple[tuple[ChannelSpec, ...], ...],
+    block_mode: bool,
     mesh: Mesh,
     operators: OperatorMatrices,
     energies: jax.Array,
@@ -484,7 +578,12 @@ def _bind_solver_observables(
     has_energy_grid: bool,
     mass_factor_grid: jax.Array | None = None,
 ) -> _ObservableBundle:
-    """Bind all runtime entry points requested for one compiled solver."""
+    """Bind all runtime entry points requested for one compiled solver.
+
+    Every kernel is batched over the symmetry-block axis (DESIGN.md §15.5);
+    a ``channels=`` compile passes the single block ``(channels,)`` with
+    ``block_mode=False``.
+    """
 
     spectrum_fn: SpectrumKernel | None = None
     rmatrix_fn: RMatrixObservable | None = None
@@ -501,9 +600,10 @@ def _bind_solver_observables(
         spectrum_fn = make_spectrum_kernel(
             mesh,
             operators,
-            request.channels,
+            blocks,
             method=request.method,
             keep_eigenvectors=request.keep_eigenvectors,
+            block_mode=block_mode,
         )
         (
             bound_rmatrix,
@@ -512,7 +612,7 @@ def _bind_solver_observables(
             bound_greens,
             bound_wavefunction,
             bound_eigh,
-        ) = bind_observables(mesh, request.channels, energies, boundary)
+        ) = bind_observables(mesh, blocks, energies, boundary, block_mode=block_mode)
 
         # S- and phase-shift observables are built from the spectral R-matrix, so
         # the raw R observable remains available whenever matching is requested.
@@ -534,10 +634,11 @@ def _bind_solver_observables(
                 phases_grid_fn,
             ) = bind_grid_observables(
                 mesh,
-                request.channels,
+                blocks,
                 energies,
                 boundary,
                 mass_factor_grid=mass_factor_grid,
+                block_mode=block_mode,
             )
 
     rmatrix_direct_fn: DirectRMatrixKernel | None = None
@@ -548,12 +649,15 @@ def _bind_solver_observables(
         rmatrix_direct_fn = make_rmatrix_direct_kernel(
             mesh,
             operators,
-            request.channels,
+            blocks,
             energies,
             boundary,
             mass_factor_grid,
+            block_mode=block_mode,
         )
-        smatrix_direct_fn = make_smatrix_direct_observable(rmatrix_direct_fn, boundary)
+        smatrix_direct_fn = make_smatrix_direct_observable(
+            rmatrix_direct_fn, boundary, block_mode=block_mode
+        )
         phases_direct_fn = make_phases_direct_observable(smatrix_direct_fn)
     # wavefunction_direct is available whenever the direct path is active
     # ("rmatrix_direct"), and is the binding for "wavefunction" under
@@ -563,26 +667,24 @@ def _bind_solver_observables(
         wavefunction_direct_fn = make_direct_wavefunction_kernel(
             mesh,
             operators,
-            request.channels,
+            blocks,
             energies,
             mass_factor_grid,
+            block_mode=block_mode,
         )
 
-    interpolate_rmatrix_fn: InterpolatorBuilder | None = None
-    interpolate_smatrix_fn: InterpolatorBuilder | None = None
-    interpolate_phases_fn: InterpolatorBuilder | None = None
-    if has_energy_grid:
-        (
-            interpolate_rmatrix_fn,
-            interpolate_smatrix_fn,
-            interpolate_phases_fn,
-        ) = bind_interpolators(energies)
-
-    interaction_from_block_fn = make_interaction_from_block(mesh, request.channels, energies)
-    interaction_from_array_fn = make_interaction_from_array(mesh, request.channels, energies)
-    interaction_from_funcs_fn = make_interaction_from_funcs(mesh, request.channels, energies)
+    n_blocks = len(blocks) if block_mode else None
+    interaction_from_block_fn = make_interaction_from_block(
+        mesh, request.channels, energies, n_blocks=n_blocks
+    )
+    interaction_from_array_fn = make_interaction_from_array(
+        mesh, request.channels, energies, n_blocks=n_blocks
+    )
+    interaction_from_funcs_fn = make_interaction_from_funcs(
+        mesh, request.channels, energies, n_blocks=n_blocks
+    )
     local_potential_fn, nonlocal_potential_fn = make_potential_builders(
-        mesh, request.channels, energies
+        mesh, request.channels, energies, n_blocks=n_blocks
     )
 
     return _ObservableBundle(
@@ -605,9 +707,6 @@ def _bind_solver_observables(
         interaction_from_funcs=interaction_from_funcs_fn,
         local_potential=local_potential_fn,
         nonlocal_potential=nonlocal_potential_fn,
-        interpolate_rmatrix=interpolate_rmatrix_fn,
-        interpolate_smatrix=interpolate_smatrix_fn,
-        interpolate_phases=interpolate_phases_fn,
     )
 
 
@@ -638,6 +737,7 @@ def _assemble_solver(
         transforms=transforms.matrices,
         method=request.method,
         mass_factor_grid=mass_factor_grid,
+        blocks=request.block_groups,
         spectrum=observables.spectrum if expose_spectrum else None,
         rmatrix=observables.rmatrix,
         smatrix=observables.smatrix,
@@ -657,9 +757,6 @@ def _assemble_solver(
         interaction_from_funcs=observables.interaction_from_funcs,
         local_potential=observables.local_potential,
         nonlocal_potential=observables.nonlocal_potential,
-        interpolate_rmatrix=observables.interpolate_rmatrix,
-        interpolate_smatrix=observables.interpolate_smatrix,
-        interpolate_phases=observables.interpolate_phases,
         to_grid_vector=transforms.to_grid_vector,
         from_grid_vector=transforms.from_grid_vector,
         to_grid_matrix=transforms.to_grid_matrix,
@@ -667,6 +764,47 @@ def _assemble_solver(
         double_fourier_transform=transforms.double_fourier_transform,
         integrate=transforms.integrate,
     )
+
+
+def _resolve_device(device: Any) -> Any:
+    """Resolve a device-platform string (e.g. ``"cpu"``) to a concrete device."""
+
+    if device is None or isinstance(device, jax.Device):
+        return device
+    return cast(Any, jax.devices(device)[0])
+
+
+def _finalize_arrays[T](tree: T, dtype: DTypeLike, device: Any) -> T:
+    """Cast a compile-time cache pytree to ``dtype`` and place it on ``device``.
+
+    Floating leaves are cast to ``dtype``; complex leaves to the matching
+    complex dtype (``complex64`` for ``float32``); bool/int leaves are left
+    alone.  Applied to every cache *before* the kernel/observable factories
+    run, so all derived arrays (surface projectors, Gauss scaling, stacked
+    centrifugal rows) inherit the precision and placement automatically.
+    """
+
+    target = jnp.dtype(dtype)
+    if not jnp.issubdtype(target, jnp.floating):
+        msg = f"`dtype` must be a floating-point dtype, got {target}."
+        raise ValueError(msg)
+    complex_target = jnp.dtype(
+        jnp.complex64 if target == jnp.dtype(jnp.float32) else jnp.complex128
+    )
+
+    def finalize_leaf(leaf: object) -> object:
+        if not isinstance(leaf, jax.Array | np.ndarray):
+            return leaf
+        array = jnp.asarray(leaf)
+        if jnp.issubdtype(array.dtype, jnp.complexfloating):
+            array = array.astype(complex_target)
+        elif jnp.issubdtype(array.dtype, jnp.floating):
+            array = array.astype(target)
+        if device is not None:
+            array = jax.device_put(array, device)
+        return array
+
+    return jax.tree.map(finalize_leaf, tree)
 
 
 def _broadcast_mass_factor_grid(

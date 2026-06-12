@@ -53,7 +53,21 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx_copybutton",
     "nbsphinx",
+    "myst_parser",
 ]
+
+# MyST renders the Markdown architecture reference (docs/design.md includes the
+# repository-root DESIGN.md).  dollarmath/amsmath enable its $…$/$$…$$ math;
+# heading anchors make the document's own #section links resolve.
+myst_enable_extensions = ["dollarmath", "amsmath"]
+myst_heading_anchors = 4
+
+
+# GitHub-style slugs so DESIGN.md's own #section links resolve.  Referenced
+# by import string (not a conf.py-local function) so the Sphinx environment
+# stays picklable.
+sys.path.insert(0, str(Path(__file__).parent))
+myst_heading_slug_func = "_github_slugs.github_heading_slug"
 
 # ---------------------------------------------------------------------------
 # Source / output

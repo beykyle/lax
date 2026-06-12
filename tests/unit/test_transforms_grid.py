@@ -126,7 +126,8 @@ def test_from_grid_vector_accepts_callable_profile() -> None:
 
     assert np.allclose(callable_coefficients, sampled_coefficients, atol=1.0e-12, rtol=1.0e-12)
     assert np.allclose(
-        reconstructed, np.asarray(solver.to_grid_vector(jnp.asarray(sampled_coefficients)))
+        reconstructed,
+        np.asarray(solver.to_grid_vector(jnp.asarray(sampled_coefficients))),
     )
 
 

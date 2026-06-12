@@ -15,4 +15,3 @@ from committed outputs; run them locally with ``uv run jupyter lab`` (see
    notebooks/descouvemont_o16_ca44_demo
    notebooks/descouvemont_closed_channels_demo
    notebooks/fourier_demo
-   notebooks/energy_dependent_demo

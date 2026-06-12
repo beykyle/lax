@@ -92,38 +92,83 @@ class ChannelSpec:
 class Interaction:
     """Assembled coupled-channel potential block in MeV.
 
-    block : (M, M) or (N_E, M, M)  where M = N_c·N
+    block : (M, M), (N_E, M, M), (N_b, M, M), or (N_b, N_E, M, M)  where M = N_c·N
         Local terms on the per-channel diagonal, non-local terms as full
         Gauss-scaled blocks. Symmetric. Mass-independent — per-channel mass
         factors are applied by the solver, never folded into this block.
         Excludes kinetic, centrifugal, threshold, and energy terms.
+        Canonical axis order is block × energy (DESIGN.md §15.5): the
+        symmetry-block axis, when present, always leads.
     energy_dependent : bool (static)
-        True iff ``block`` has a leading (N_E,) axis aligned with the
-        compile-time energy grid.
+        True iff ``block`` has an (N_E,) axis aligned with the compile-time
+        energy grid (leading, or directly after the block axis).
+    block_dependent : bool (static)
+        True iff ``block`` has a leading (N_b,) symmetry-block axis aligned
+        with the compile-time ``blocks=`` set (DESIGN.md §15.5).  Parallel to
+        ``energy_dependent``; composes with it as ``(N_b, N_E, M, M)``.
     """
 
     block: jax.Array
     energy_dependent: bool = field(metadata={"static": True})
+    block_dependent: bool = field(default=False, metadata={"static": True})
 
     def __add__(self, other: object) -> Interaction:
         """Combine two Interaction blocks by summing their potential contributions.
 
-        Energy-independent + energy-independent → energy-independent.
-        Any combination involving an energy-dependent term → energy-dependent,
-        broadcasting ``(M, M)`` to ``(1, M, M)`` before adding.
+        Each static axis flag propagates by OR: any operand carrying the
+        energy (block) axis makes the sum energy- (block-) dependent, and the
+        other operand is broadcast across the missing axis.  Axes follow the
+        canonical block × energy order, so ``(N_E, M, M) + (N_b, M, M)``
+        yields ``(N_b, N_E, M, M)``.
         """
         if not isinstance(other, Interaction):
             return NotImplemented
-        if not self.energy_dependent and not other.energy_dependent:
-            return Interaction(block=self.block + other.block, energy_dependent=False)
-        b1 = self.block if self.energy_dependent else self.block[None]
-        b2 = other.block if other.energy_dependent else other.block[None]
-        return Interaction(block=b1 + b2, energy_dependent=True)
+        energy_dependent = self.energy_dependent or other.energy_dependent
+        block_dependent = self.block_dependent or other.block_dependent
+        b1 = _lift_block(
+            self.block,
+            self.energy_dependent,
+            self.block_dependent,
+            energy_dependent,
+            block_dependent,
+        )
+        b2 = _lift_block(
+            other.block,
+            other.energy_dependent,
+            other.block_dependent,
+            energy_dependent,
+            block_dependent,
+        )
+        return Interaction(
+            block=b1 + b2,
+            energy_dependent=energy_dependent,
+            block_dependent=block_dependent,
+        )
 
     def __radd__(self, other: object) -> Interaction:
         if other == 0:
             return self
         return NotImplemented
+
+
+def _lift_block(
+    block: jax.Array,
+    has_energy: bool,
+    has_block: bool,
+    want_energy: bool,
+    want_block: bool,
+) -> jax.Array:
+    """Insert size-1 axes so ``block`` broadcasts to the target axis layout.
+
+    Target layout is the canonical ``[N_b,][N_E,] M, M`` order: a missing
+    block axis is inserted at position 0, a missing energy axis after it.
+    """
+
+    if want_block and not has_block:
+        block = block[None]
+    if want_energy and not has_energy:
+        block = block[:, None] if want_block else block[None]
+    return block
 
 
 type EnergyLike = float | jax.Array
@@ -151,7 +196,9 @@ class SpectrumKernel(Protocol):
         Returns
         -------
         Spectrum
-            Eigendecomposition of the Bloch-augmented Hamiltonian.
+            Eigendecomposition of the Bloch-augmented Hamiltonian.  For a
+            solver compiled with ``blocks=`` (§15.5) the leaves carry a
+            leading ``(N_b,)`` axis.
         """
         ...
 
@@ -172,7 +219,8 @@ class RMatrixObservable(Protocol):
         Returns
         -------
         jax.Array
-            R-matrix, shape ``(N_c, N_c)``.
+            R-matrix, shape ``(N_c, N_c)`` — ``(N_b, N_c, N_c)`` for a solver
+            compiled with ``blocks=`` (§15.5).
         """
         ...
 
@@ -191,7 +239,9 @@ class SpectrumObservable(Protocol):
         Returns
         -------
         jax.Array
-            Observable values on the compile-time grid, shape ``(N_E, ...)``.
+            Observable values on the compile-time grid, shape ``(N_E, ...)``
+            — with a leading ``(N_b,)`` axis for a solver compiled with
+            ``blocks=`` (§15.5).
         """
         ...
 
@@ -212,7 +262,8 @@ class SpectrumGridObservable(Protocol):
         Returns
         -------
         jax.Array
-            Observable values, shape ``(N_E, ...)``.
+            Observable values, shape ``(N_E, ...)`` — with a leading
+            ``(N_b,)`` axis for a solver compiled with ``blocks=`` (§15.5).
         """
         ...
 
@@ -234,7 +285,8 @@ class GreenFunctionObservable(Protocol):
         Returns
         -------
         jax.Array
-            Resolvent ``(H - E/μ)⁻¹``, shape ``(M, M)``.
+            Resolvent ``(H - E/μ)⁻¹``, shape ``(M, M)`` — ``(N_b, M, M)``
+            for a solver compiled with ``blocks=`` (§15.5).
         """
         ...
 
@@ -259,7 +311,9 @@ class WavefunctionObservable(Protocol):
         Returns
         -------
         jax.Array
-            Internal wavefunction coefficients in the mesh basis, shape ``(M,)``.
+            Internal wavefunction coefficients in the mesh basis, shape
+            ``(M,)`` — ``(N_b, M)`` for a solver compiled with ``blocks=``
+            (§15.5), where ``source`` is ``(N_b, M)`` or a shared ``(M,)``.
         """
         ...
 
@@ -308,7 +362,9 @@ class DirectRMatrixKernel(Protocol):
         Returns
         -------
         jax.Array
-            R-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``.
+            R-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)`` —
+            ``(N_b, N_E, N_c, N_c)`` for a solver compiled with ``blocks=``
+            (§15.5).
         """
         ...
 
@@ -327,7 +383,9 @@ class SMatrixDirectObservable(Protocol):
         Returns
         -------
         jax.Array
-            S-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``, complex.
+            S-matrix on the compile-time grid, shape ``(N_E, N_c, N_c)``,
+            complex — ``(N_b, N_E, N_c, N_c)`` for a solver compiled with
+            ``blocks=`` (§15.5).
 
         Notes
         -----
@@ -351,7 +409,8 @@ class PhasesDirectObservable(Protocol):
         Returns
         -------
         jax.Array
-            Phase shifts, shape ``(N_E, N_c)``, in radians.
+            Phase shifts, shape ``(N_E, N_c)``, in radians —
+            ``(N_b, N_E, N_c)`` for a solver compiled with ``blocks=`` (§15.5).
         """
         ...
 
@@ -379,33 +438,9 @@ class WavefunctionDirectObservable(Protocol):
         Returns
         -------
         jax.Array
-            Internal wavefunction coefficient vector, shape ``(N_c·N,)``.
-        """
-        ...
-
-
-class InterpolatorBuilder(Protocol):
-    """Callable that builds a Padé interpolator over the compile-time grid."""
-
-    def __call__(
-        self,
-        values: jax.Array,
-        order: tuple[int, int] | None = None,
-    ) -> Callable[[EnergyLike], jax.Array]:
-        """Build a Padé interpolator over the solver's compile-time energy grid.
-
-        Parameters
-        ----------
-        values
-            Observable samples, shape ``(N_E, ...)``.
-        order
-            Padé numerator/denominator degrees ``(p, q)`` with ``p + q + 1 == N_E``.
-            Defaults to the diagonal approximant.
-
-        Returns
-        -------
-        Callable[[EnergyLike], jax.Array]
-            JIT-compiled interpolant; call it at any energy to evaluate.
+            Internal wavefunction coefficient vector, shape ``(N_c·N,)`` —
+            ``(N_b, N_c·N)`` for a solver compiled with ``blocks=`` (§15.5),
+            where ``source`` is ``(N_b, N_c·N)`` or a shared ``(N_c·N,)``.
         """
         ...
 
@@ -735,6 +770,11 @@ class Solver:
         Per-energy ℏ²/2μ values in MeV·fm², shape ``(N_E,)``, or ``None``
         when a constant mass factor is used.  Stored here so the aligned-grid
         observables can use the correct μ(E) at each energy point.
+    blocks
+        The symmetry-block set passed to ``lax.compile(blocks=…)``, or ``None``
+        for a channels-compiled solver (DESIGN.md §15.5).  When set, ``channels``
+        holds the template block ``blocks[0]``, ``boundary`` carries a leading
+        ``(N_b,)`` axis, and every observable output gains a leading block axis.
 
     **Spectral-path observables** (present when ``method`` is ``"eigh"``/``"eig"``):
 
@@ -767,12 +807,6 @@ class Solver:
     rmatrix_direct
         ``(V) → R`` — per-energy linear-solve R-matrix on the compile-time grid.
 
-    **Padé interpolation builders** (present whenever ``energies`` was supplied):
-
-    interpolate_rmatrix, interpolate_smatrix, interpolate_phases
-        ``(samples, order=None) → callable`` — build a Padé interpolant over
-        the compile-time grid.
-
     **Transform helpers**:
 
     to_grid_vector
@@ -797,6 +831,7 @@ class Solver:
     transforms: TransformMatrices
     method: Method
     mass_factor_grid: jax.Array | None = None
+    blocks: tuple[tuple[ChannelSpec, ...], ...] | None = None
     spectrum: SpectrumKernel | None = None
     rmatrix: RMatrixObservable | None = None
     smatrix: SpectrumObservable | None = None
@@ -816,9 +851,6 @@ class Solver:
     interaction_from_funcs: Callable[..., Any] | None = None
     local_potential: Callable[..., Any] | None = None
     nonlocal_potential: Callable[..., Any] | None = None
-    interpolate_rmatrix: InterpolatorBuilder | None = None
-    interpolate_smatrix: InterpolatorBuilder | None = None
-    interpolate_phases: InterpolatorBuilder | None = None
     to_grid_vector: GridVectorTransform | None = None
     from_grid_vector: FromGridVectorTransform | None = None
     to_grid_matrix: GridMatrixTransform | None = None
@@ -868,10 +900,12 @@ class Solver:
         live = [n for n in _observable_names if getattr(self, n) is not None]
         transforms = [n for n in _transform_names if getattr(self, n) is not None]
         n_e = len(self.energies)
+        block_info = f", {len(self.blocks)} blocks" if self.blocks is not None else ""
         return (
             f"Solver({self.mesh.family}/{self.mesh.regularization} "
             f"n={self.mesh.n} scale={self.mesh.scale}fm, "
-            f"method={self.method}, {n_e} {'energy' if n_e == 1 else 'energies'})\n"
+            f"method={self.method}, {n_e} {'energy' if n_e == 1 else 'energies'}"
+            f"{block_info})\n"
             f"  observables: {' '.join(live) or 'none'}\n"
             f"  transforms:  {' '.join(transforms) or 'none'}"
         )
@@ -891,7 +925,6 @@ __all__ = [
     "GridVectorTransform",
     "Integrator",
     "Interaction",
-    "InterpolatorBuilder",
     "Mesh",
     "MeshFamily",
     "MeshSpec",
