@@ -14,7 +14,7 @@ formula runs, and the block axis is squeezed off the result.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
+from typing import NoReturn, cast
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +23,7 @@ from lax.spectral.matching import open_channel_smatrix_from_R, phases_from_S
 from lax.spectral.observables import (
     greens_from_spectrum,
     rmatrix_from_spectrum,
+    wavefunction_grid_from_spectrum,
     wavefunction_internal_from_spectrum,
 )
 from lax.spectral.types import Spectrum
@@ -35,10 +36,36 @@ from lax.types import (
     RMatrixObservable,
     SpectrumGridObservable,
     SpectrumObservable,
+    WavefunctionGridObservable,
     WavefunctionObservable,
 )
 
 from .assembly import add_block_axis, uniform_block_mass_factor
+
+
+@dataclass(frozen=True)
+class _NonuniformMassFactorStub:
+    """Raising stand-in for static-regime observables on a non-uniform μ(E) solver.
+
+    With a non-uniform ``mass_factor_grid`` the dimensionless Hamiltonian
+    ``H/μ(E)`` varies with energy, so a static-regime evaluation would mix
+    per-energy boundary values with a single-μ spectral denominator — silently
+    wrong matching.  The stub keeps the observable slot non-``None`` (feature
+    detection, ``__repr__``, pickling all behave) while turning any call into
+    a clear error pointing at the legitimate paths.
+    """
+
+    observable: str
+
+    def __call__(self, *args: object, **kwargs: object) -> NoReturn:
+        raise ValueError(
+            f"solver.{self.observable} is unavailable: this solver was compiled with a "
+            "non-uniform mass_factor_grid, so static-regime spectral evaluation would mix "
+            "per-energy boundary values with a single-mu spectral denominator. "
+            "solver.spectrum(V) returns an energy-batched Spectrum on this solver - use "
+            "the aligned-grid observables (rmatrix_grid / smatrix_grid / phases_grid / "
+            "wavefunction_grid) or the direct path (method='linear_solve')."
+        )
 
 
 @dataclass(frozen=True)
@@ -296,6 +323,7 @@ def bind_observables(
     energies: jax.Array,
     boundary: BoundaryValues | None,
     block_mode: bool = False,
+    mass_factor_nonuniform: bool = False,
 ) -> tuple[
     RMatrixObservable,
     SpectrumObservable | None,
@@ -323,6 +351,12 @@ def bind_observables(
     block_mode
         ``True`` for a ``blocks=`` compile: outputs keep the leading
         ``(N_b,)`` axis.
+    mass_factor_nonuniform
+        ``True`` when the solver was compiled with a non-uniform
+        ``mass_factor_grid``.  The five static-regime observables are then
+        bound to :class:`_NonuniformMassFactorStub` instances that raise on
+        call — the aligned-grid observables and the direct path are the
+        legitimate μ(E) routes.  Raw eigenpair access stays live.
 
     Returns
     -------
@@ -330,6 +364,16 @@ def bind_observables(
         Bound runtime entry points for the R-matrix, S-matrix, phase shifts, Green's
         function, internal wavefunction, and raw eigensystem access.
     """
+
+    if mass_factor_nonuniform:
+        return (
+            _NonuniformMassFactorStub(observable="rmatrix"),
+            _NonuniformMassFactorStub(observable="smatrix") if boundary is not None else None,
+            _NonuniformMassFactorStub(observable="phases") if boundary is not None else None,
+            _NonuniformMassFactorStub(observable="greens"),
+            _NonuniformMassFactorStub(observable="wavefunction"),
+            _EigenpairAccessor(),
+        )
 
     channel_radius = mesh.scale
     mass_factor = uniform_block_mass_factor(blocks, context="spectral observable path")
@@ -432,6 +476,130 @@ def bind_grid_observables(
             block_mode=block_mode,
         )
     return rmatrix_grid, smatrix_grid, phases_grid
+
+
+def spectrum_is_energy_batched(spectrum: Spectrum) -> bool:
+    """Return whether a block-lifted ``Spectrum`` carries an energy batch axis.
+
+    Apply *after* :func:`add_block_axis` so one rule serves both compile
+    modes: block-lifted eigenvalues are ``(N_b, M)`` for a static-V spectrum
+    and ``(N_b, N_E, M)`` for the energy-batched regime.  Ranks are static
+    under ``jax.jit``.
+    """
+
+    return spectrum.eigenvalues.ndim >= 3
+
+
+@dataclass(frozen=True)
+class _WavefunctionGridObservable:
+    """Pickle-safe wavefunction-grid observable, serving both evaluation regimes.
+
+    The static-V regime ("diagonalize once, evaluate the grid") runs the fused
+    einsum of :func:`wavefunction_grid_from_spectrum`; the energy-batched
+    regime vmaps the per-energy Green's contraction over the aligned
+    ``(spectra_e, E_e, source_e, μ_e)`` axes — the ``smatrix_grid`` pattern.
+    The regime is detected from the ``Spectrum`` rank.
+    """
+
+    sources: jax.Array  # (N_b, N_E, N_c, M) — always block-stacked
+    energies: jax.Array  # (N_E,)
+    mass_factor: float
+    mass_factor_grid: jax.Array  # (N_E,)
+    n_energies: int
+    block_mode: bool
+    mass_factor_nonuniform: bool
+
+    def __call__(self, spectrum: Spectrum, channel_index: int | None = 0) -> jax.Array:
+        """Evaluate ψ for every ``(block, grid-energy)`` pair; see the protocol."""
+
+        if spectrum.eigenvectors is None:
+            raise RuntimeError(
+                "Eigenvectors were not retained at compile time. "
+                "Re-compile with 'greens' or 'wavefunction' in solvers= to keep them."
+            )
+        if not self.block_mode:
+            spectrum = add_block_axis(spectrum)
+        batched = spectrum_is_energy_batched(spectrum)
+        if batched and spectrum.eigenvalues.shape[1] != self.n_energies:
+            msg = (
+                f"energy-batched Spectrum carries {spectrum.eigenvalues.shape[1]} energies "
+                f"but the compile-time grid has N_E = {self.n_energies}."
+            )
+            raise ValueError(msg)
+        sources = (
+            self.sources
+            if channel_index is None
+            else self.sources[:, :, channel_index : channel_index + 1, :]
+        )
+        if batched:
+            result = cast(
+                jax.Array,
+                _WAVEFUNCTION_GRID_ALIGNED_BLOCKS_JIT(
+                    spectrum, self.energies, sources, self.mass_factor_grid
+                ),
+            )
+        else:
+            if self.mass_factor_nonuniform:
+                raise ValueError(
+                    "wavefunction_grid received a static-V Spectrum, but this solver was "
+                    "compiled with a non-uniform mass_factor_grid: H/mu(E) varies with "
+                    "energy, so diagonalize-once is invalid. Pass the energy-batched "
+                    "Spectrum from this solver's spectrum(V) (it dispatches per energy), "
+                    "or use wavefunction_direct_grid (method='linear_solve')."
+                )
+            result = cast(
+                jax.Array,
+                _WAVEFUNCTION_GRID_STATIC_BLOCKS_JIT(
+                    spectrum, self.energies, sources, self.mass_factor
+                ),
+            )
+        if channel_index is not None:
+            result = result[:, :, 0, :]
+        return result if self.block_mode else result[0]
+
+
+def bind_wavefunction_grid_observable(
+    blocks: tuple[tuple[ChannelSpec, ...], ...],
+    energies: jax.Array,
+    sources: jax.Array,
+    mass_factor_grid: jax.Array | None = None,
+    block_mode: bool = False,
+    mass_factor_nonuniform: bool = False,
+) -> WavefunctionGridObservable:
+    """Bind the spectral wavefunction-grid observable to one compiled solver.
+
+    Parameters
+    ----------
+    blocks
+        ``N_b`` symmetry blocks of ``N_c`` channels each.
+    energies
+        Compile-time energy grid, shape ``(N_E,)``.
+    sources
+        Block-stacked baked source stack, shape ``(N_b, N_E, N_c, M)``.
+    mass_factor_grid
+        Reduced ``(N_E,)`` per-energy ℏ²/2μ, or ``None`` for a constant μ.
+    block_mode
+        ``True`` for a ``blocks=`` compile.
+    mass_factor_nonuniform
+        ``True`` when μ genuinely varies with energy — the static regime then
+        raises (C4) and only the energy-batched regime is served.
+    """
+
+    mass_factor = uniform_block_mass_factor(blocks, context="spectral observable path")
+    _mfg = (
+        jnp.full(len(energies), mass_factor)
+        if mass_factor_grid is None
+        else jnp.asarray(mass_factor_grid)
+    )
+    return _WavefunctionGridObservable(
+        sources=sources,
+        energies=energies,
+        mass_factor=mass_factor,
+        mass_factor_grid=_mfg,
+        n_energies=len(energies),
+        block_mode=block_mode,
+        mass_factor_nonuniform=mass_factor_nonuniform,
+    )
 
 
 def _rmatrix(
@@ -701,6 +869,56 @@ def _wavefunction_blocks(
     return jax.vmap(one_block)(spectra, sources)
 
 
+def _wavefunction_grid_aligned(
+    spectra: Spectrum,
+    energies: jax.Array,
+    sources: jax.Array,
+    mass_factor_grid: jax.Array,
+) -> jax.Array:
+    """Return aligned-grid wavefunctions ``ψ(E_i; spec_i)``, shape ``(N_E, K, M)``.
+
+    The energy-batched regime: one Green's contraction per aligned
+    ``(spectrum_e, E_e, source_e, μ_e)`` tuple — the ``_smatrix_grid``
+    pattern.
+    """
+
+    def one_energy(
+        spectrum: Spectrum, energy: jax.Array, source: jax.Array, mu: jax.Array
+    ) -> jax.Array:
+        greens = greens_from_spectrum(spectrum, energy=energy, mass_factor=mu)
+        return jnp.einsum("mn,cn->cm", greens, source)
+
+    return jax.vmap(one_energy)(spectra, energies, sources, mass_factor_grid)
+
+
+def _wavefunction_grid_static_blocks(
+    spectra: Spectrum,
+    energies: jax.Array,
+    sources: jax.Array,
+    mass_factor: float,
+) -> jax.Array:
+    """Return per-block static-regime grid wavefunctions, shape ``(N_b, N_E, K, M)``."""
+
+    def one_block(spectrum: Spectrum, source_stack: jax.Array) -> jax.Array:
+        return wavefunction_grid_from_spectrum(spectrum, energies, source_stack, mass_factor)
+
+    return jax.vmap(one_block)(spectra, sources)
+
+
+def _wavefunction_grid_aligned_blocks(
+    spectra: Spectrum,
+    energies: jax.Array,
+    sources: jax.Array,
+    mass_factor_grid: jax.Array,
+) -> jax.Array:
+    """Return per-block aligned-grid wavefunctions, shape ``(N_b, N_E, K, M)``."""
+
+    def one_block(spectra_b: Spectrum, source_stack: jax.Array) -> jax.Array:
+        return _wavefunction_grid_aligned(spectra_b, energies, source_stack, mass_factor_grid)
+
+    return jax.vmap(one_block)(spectra, sources)
+
+
 def _rmatrix_grid_blocks(
     spectra: Spectrum,
     energies: jax.Array,
@@ -778,6 +996,11 @@ _PHASES_GRID_BLOCKS_JIT = jax.jit(
     _phases_grid_blocks,
     static_argnames=("channel_radius",),
 )
+_WAVEFUNCTION_GRID_STATIC_BLOCKS_JIT = jax.jit(
+    _wavefunction_grid_static_blocks,
+    static_argnames=("mass_factor",),
+)
+_WAVEFUNCTION_GRID_ALIGNED_BLOCKS_JIT = jax.jit(_wavefunction_grid_aligned_blocks)
 
 
 def _match_one_energy(

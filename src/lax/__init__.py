@@ -19,7 +19,7 @@ import lax.models as models
 import lax.spectral as spectral
 from lax.compile import compile
 from lax.types import ChannelSpec, Interaction, MeshSpec, Solver
-from lax.wavefunction import make_wavefunction_source
+from lax.wavefunction import make_wavefunction_source, make_wavefunction_source_grid
 
 __all__ = [
     "ChannelSpec",
@@ -29,6 +29,7 @@ __all__ = [
     "compile",
     "constants",
     "make_wavefunction_source",
+    "make_wavefunction_source_grid",
     "models",
     "spectral",
 ]

@@ -354,6 +354,97 @@ class _WavefunctionDirectKernel:
         return result if self.block_mode else result[0]
 
 
+@dataclass(frozen=True)
+class _WavefunctionDirectGridKernel:
+    """Pickle-safe direct wavefunction-grid kernel: every grid energy in one call.
+
+    The ``method="linear_solve"`` companion of the spectral
+    ``wavefunction_grid``: one LU solve per ``(block, energy)`` against the
+    compile-time-baked source stack.  Inherits the direct path's per-channel
+    μ(E) support.
+    """
+
+    mesh: Mesh
+    operators: OperatorMatrices
+    energies: jax.Array
+    centrifugal: jax.Array  # (N_b, N_c)
+    thresholds: jax.Array  # (N_b, N_c)
+    mass_factor_grid_blocks: jax.Array  # (N_b, N_E, N_c)
+    sources: jax.Array  # (N_b, N_E, N_c, N_c·N)
+    matrix_size: int
+    n_blocks: int
+    n_energies: int
+    block_mode: bool
+
+    def __call__(
+        self,
+        potential: jax.Array | Interaction,
+        channel_index: int | None = 0,
+    ) -> jax.Array:
+        """Solve ``C(E_i) ψ = source_i`` for every ``(block, grid-energy)`` pair.
+
+        Parameters
+        ----------
+        potential
+            An :class:`~lax.Interaction`; block- and/or energy-dependent
+            interactions are broadcast automatically.
+        channel_index
+            Incoming channel within the block (default 0); ``None`` returns
+            all incoming channels on an extra ``N_c`` axis.
+
+        Returns
+        -------
+        jax.Array
+            Wavefunction coefficients, shape ``(N_E, N_c·N)`` —
+            ``(N_b, N_E, N_c·N)`` in blocks mode; ``channel_index=None``
+            inserts an ``N_c`` axis before the coefficient axis.
+        """
+
+        if not isinstance(potential, Interaction):
+            raise TypeError(
+                "wavefunction_direct_grid() accepts only Interaction objects. "
+                "Use solver.local_potential()/solver.nonlocal_potential() or solver.interaction_from_block/array/funcs to build one."
+            )
+        if not self.block_mode:
+            reject_block_dependent(potential, "wavefunction_direct_grid()")
+        block = lift_to_blocks(potential.block, potential.block_dependent, self.n_blocks)
+        if potential.energy_dependent:
+            if block.shape[1] != self.n_energies:
+                msg = (
+                    f"energy-dependent Interaction carries {block.shape[1]} energies "
+                    f"but the compile-time grid has N_E = {self.n_energies}."
+                )
+                raise ValueError(msg)
+            blocks_grid = block
+        else:
+            blocks_grid = jnp.broadcast_to(
+                block[:, None],
+                (self.n_blocks, self.n_energies, *block.shape[-2:]),
+            )
+        sources = (
+            self.sources
+            if channel_index is None
+            else self.sources[:, :, channel_index : channel_index + 1, :]
+        )
+        result = cast(
+            jax.Array,
+            _WAVEFUNCTION_DIRECT_GRID_BLOCKS_JIT(
+                blocks_grid,
+                sources,
+                self.energies,
+                self.mass_factor_grid_blocks,
+                self.mesh,
+                self.operators,
+                self.centrifugal,
+                self.thresholds,
+                self.matrix_size,
+            ),
+        )
+        if channel_index is not None:
+            result = result[:, :, 0, :]
+        return result if self.block_mode else result[0]
+
+
 def _block_mass_data(
     blocks: tuple[tuple[ChannelSpec, ...], ...],
     channel_mass_rows: jax.Array,
@@ -535,6 +626,58 @@ def make_direct_wavefunction_kernel(
         mass_factor_grid_blocks=mfg_blocks,
         matrix_size=mesh.n * len(blocks[0]),
         n_blocks=len(blocks),
+        block_mode=block_mode,
+    )
+
+
+def make_direct_wavefunction_grid_kernel(
+    mesh: Mesh,
+    operators: OperatorMatrices,
+    blocks: tuple[tuple[ChannelSpec, ...], ...],
+    energies: jax.Array,
+    sources: jax.Array,
+    mass_factor_grid: jax.Array | None = None,
+    block_mode: bool = False,
+) -> _WavefunctionDirectGridKernel:
+    """Build a direct wavefunction-grid kernel ``(V, channel_index) → ψ``.
+
+    Vmaps the per-energy direct solve over the whole compile-time grid against
+    the baked source stack: ``C(E_i)`` is LU-factorized once per
+    ``(block, energy)`` and solved for every incoming-channel column.
+    [DESIGN.md §11.3, §15.5]
+
+    Parameters
+    ----------
+    sources
+        Block-stacked baked source stack, shape ``(N_b, N_E, N_c, N_c·N)``
+        (see :func:`lax.wavefunction.build_wavefunction_sources`).
+
+    Raises
+    ------
+    NotImplementedError
+        On propagated multi-interval meshes — the boundary basis behind the
+        source stack differs per interval.
+    """
+
+    if mesh.propagation is not None:
+        raise NotImplementedError(
+            "wavefunction_direct_grid is not supported on propagated multi-interval "
+            "meshes — the boundary basis behind the source stack differs per "
+            "interval. Use a single-interval mesh."
+        )
+    centrifugal, thresholds, channel_mass_rows = block_group_arrays(blocks)
+    _, mfg_blocks, _ = _block_mass_data(blocks, channel_mass_rows, energies, mass_factor_grid)
+    return _WavefunctionDirectGridKernel(
+        mesh=mesh,
+        operators=operators,
+        energies=energies,
+        centrifugal=centrifugal,
+        thresholds=thresholds,
+        mass_factor_grid_blocks=mfg_blocks,
+        sources=sources,
+        matrix_size=mesh.n * len(blocks[0]),
+        n_blocks=len(blocks),
+        n_energies=len(energies),
         block_mode=block_mode,
     )
 
@@ -756,6 +899,35 @@ def _wavefunction_direct_core(
     return result
 
 
+def _wavefunction_direct_grid_core(
+    potential: jax.Array,
+    sources: jax.Array,
+    energy: jax.Array,
+    mu_row: jax.Array,
+    mesh: Mesh,
+    operators: OperatorMatrices,
+    centrifugal: jax.Array,
+    thresholds: jax.Array,
+    matrix_size: int,
+) -> jax.Array:
+    """Multi-RHS variant of :func:`_wavefunction_direct_core`.
+
+    ``sources`` is ``(K, N_c·N)`` (one row per incoming channel): ``C(E)`` is
+    LU-factorized once and solved for all K columns, then scaled per channel
+    by μ exactly as the single-source core.
+    """
+
+    hamiltonian = assemble_hamiltonian_arrays(
+        mesh, operators, centrifugal, thresholds, mu_row, potential
+    )
+    matrix = hamiltonian - energy * jnp.eye(matrix_size, dtype=hamiltonian.dtype)
+    lu_piv = cast(tuple[jax.Array, jax.Array], jsl.lu_factor(matrix))
+    solved = cast(jax.Array, jsl.lu_solve(lu_piv, sources.T))  # (N_c·N, K)
+    scale = jnp.repeat(mu_row, mesh.n)  # (N_c·N,)
+    result: jax.Array = (scale.astype(solved.dtype)[:, None] * solved).T
+    return result
+
+
 def _direct_smatrix_grid(
     r_grid: jax.Array,
     boundary: BoundaryValues,
@@ -924,6 +1096,55 @@ def _wavefunction_direct_blocks(
     return jax.vmap(one_block)(blocks, sources, mu_rows, centrifugal, thresholds)
 
 
+def _wavefunction_direct_grid_blocks(
+    blocks: jax.Array,
+    sources: jax.Array,
+    energies: jax.Array,
+    mu_rows_grid: jax.Array,
+    mesh: Mesh,
+    operators: OperatorMatrices,
+    centrifugal: jax.Array,
+    thresholds: jax.Array,
+    matrix_size: int,
+) -> jax.Array:
+    """Return block × energy batched wavefunctions, shape ``(N_b, N_E, K, N_c·N)``.
+
+    Nested block × energy vmap of :func:`_wavefunction_direct_grid_core` over
+    the aligned ``(block_e, source_e, E_e, μ_row_e)`` axes — one LU
+    factorization per ``(block, energy)`` shared across the K incoming
+    channels.
+    """
+
+    def one_block(
+        block_grid: jax.Array,
+        source_grid: jax.Array,
+        mu_grid: jax.Array,
+        centrifugal_row: jax.Array,
+        threshold_row: jax.Array,
+    ) -> jax.Array:
+        def one_energy(
+            block: jax.Array,
+            source: jax.Array,
+            energy: jax.Array,
+            mu_row: jax.Array,
+        ) -> jax.Array:
+            return _wavefunction_direct_grid_core(
+                block,
+                source,
+                energy,
+                mu_row,
+                mesh,
+                operators,
+                centrifugal_row,
+                threshold_row,
+                matrix_size,
+            )
+
+        return jax.vmap(one_energy)(block_grid, source_grid, energies, mu_grid)
+
+    return jax.vmap(one_block)(blocks, sources, mu_rows_grid, centrifugal, thresholds)
+
+
 _RMATRIX_DIRECT_PROPAGATED_JIT = jax.jit(
     _rmatrix_direct_propagated,
     static_argnames=("channels",),
@@ -940,6 +1161,10 @@ _RMATRIX_DIRECT_GRID_BLOCKS_JIT = jax.jit(
 )
 _WAVEFUNCTION_DIRECT_BLOCKS_JIT = jax.jit(
     _wavefunction_direct_blocks,
+    static_argnames=("matrix_size",),
+)
+_WAVEFUNCTION_DIRECT_GRID_BLOCKS_JIT = jax.jit(
+    _wavefunction_direct_grid_blocks,
     static_argnames=("matrix_size",),
 )
 _DIRECT_SMATRIX_BLOCKS_JIT = jax.jit(_direct_smatrix_blocks)

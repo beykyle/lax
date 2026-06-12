@@ -1,11 +1,12 @@
 # `lax`: A JAX-Compiled Lagrange-Mesh Library for Quantum Scattering and Bound-State Problems
 
-**Design Document v1.5**
+**Design Document v1.6**
 
 ## Revision history
 
+- **v1.6** — Batched two-state evaluation and grid wavefunctions (spec v0.1.5.1, F1–F3). **F1:** `solver.matrix_element(bra, ket, operator=None, *, conjugate)` — a two-state, optionally non-conjugated bilinear form batched over the block/energy axes, bound unconditionally on every solver, plus a standalone `lax.transforms.matrix_element` (§13.4). **F2:** `solver.wavefunction_grid(spectrum, channel_index=0)` (spectral, both evaluation regimes via internal rank detection) and `solver.wavefunction_direct_grid(V, channel_index=0)` (linear-solve companion), with the Descouvemont eq.-27 source stack baked at compile time on `Solver.wavefunction_sources` and `lax.make_wavefunction_source_grid` exposing it (§11.2–11.3). **F3:** the `momenta=` × `blocks=` rejection is lifted — `F_momentum` gains a leading `(N_b,)` axis and the `grid=` projection kernels generalize to arbitrary leading batch axes (§13, §15.5). **C4 fix and guard:** the spectrum kernel now assembles each per-energy Hamiltonian with its own μ(E) when a non-uniform `mass_factor_grid` is compiled (previously the energy-batched path silently used a single uniform μ), `spectrum(V)` auto-routes to the energy-batched path on such solvers (`V.energy_dependent or mass_factor_nonuniform`), and the five static-regime spectral observables are bound to raising stubs (Appendix C.10). **C8:** the `eig` path's non-differentiability (host `pure_callback`) is documented; gradient/UQ pipelines use `linear_solve` + `wavefunction_direct_grid` (Appendix C.11). **C7:** the wavefunction normalization contract was pinned against an external reference engine by an active cross-engine DWBA acceptance test — S-matrices to ~8e-13 with zero free parameters, T-matrices via a closed-form convention conversion (Appendix C.12).
 - **v1.5** — Generalized the (previously design-only) partial-wave axis into a **symmetry-block batch axis** (§15.5). Any set of *symmetry blocks* — `(J, π)` coupled-channel groups, individual partial waves, or any other independent solves that share a channel shape `N_c` — is declared through a new `compile(blocks=…)` argument, stacked on a leading `(N_b,)` axis, and `vmap`-ped at runtime. This is the energy-axis mechanism (§4.2) applied along a second batch axis; partial waves are the `N_c = 1` special case. The `Interaction` gains a static `block_dependent` flag parallel to `energy_dependent`, with block shapes `(N_b, M, M)` / `(N_b, N_E, M, M)`. **Status: implemented and shipped** — both the direct path (`rmatrix_direct`/`smatrix_direct`/`phases_direct`/`wavefunction_direct`) and the full spectral path (`spectrum`, `rmatrix`, `smatrix`, `phases`, `greens`, `wavefunction`, `eigh`, the `*_grid` observables) vmap over the block axis; the spectral path requires one uniform mass factor across all blocks, per-block μ remains a direct-path feature (see §15.5). This revision also reconciles the document with the shipped code: core types moved to `lax/types.py` and `BoundaryValues` to `lax/spectral/types.py` (`boundary/_types.py` deleted); the explicit `solver.local_potential` / `solver.nonlocal_potential` builders (no arity inference, no `solver.potential`); `interaction_from_funcs(nonlocal_=…)` (the keyword `nonlocal` is invalid Python); `smatrix_from_R`'s √k normalization (`R̃ = K R K⁻¹`, `K = diag(√k_c)`) and the extra `BoundaryValues.k` field; per-channel μ scaling in `wavefunction_direct`; single-channel coupling sugar for the list builders; `dtype`/`device` compile parameters; R-matrix propagation (`propagate.py`) promoted from a non-goal to a documented module; and several Appendix A formula fixes. A post-implementation review (2026-06-11) verified the batched paths against per-block compiled solvers and closed the remaining open items (single-channel coupling sugar for the list builders; `dtype`/`device` compile parameters — both now implemented and tested). The phased build order that guided the implementation (former §19) was retired at the v1.5 close-out, with every phase through 11 shipped. The Padé interpolation utilities (`spectral.pade_interpolate` and the solver-bound `interpolate_*` builders, including the planned phase-12 derivative-enhanced variant) were subsequently **removed**: interpolation is observable-specific — global rational fits are defeated by the mod-π branch structure of phase shifts and by thresholds — so off-grid evaluation is left to the user (§12).
-- **v1.4** — Designed the **partial-wave (ℓ) batch axis** (§15.5, build-order Phase 11): a compile-time `partial_waves` set with baked per-wave centrifugal and boundary, a leading partial-wave axis on `Interaction` (parallel to `energy_dependent`), and partial-wave-vmapped direct observables. Distinct from the coupled-channel axis (independent solves, not coupling). Motivated by ℓ-dependent non-local kernels in the jitr refactor (jitr `DESIGN.md §4.7`). **This was a design only — it was never implemented; v1.5 supersedes it with the more general symmetry-block axis.**
+- **v1.4** — Designed the **partial-wave (ℓ) batch axis** (§15.5, build-order Phase 11): a compile-time `partial_waves` set with baked per-wave centrifugal and boundary, a leading partial-wave axis on `Interaction` (parallel to `energy_dependent`), and partial-wave-vmapped direct observables. Distinct from the coupled-channel axis (independent solves, not coupling). Motivated by ℓ-dependent non-local kernels in downstream optical-model workflows. **This was a design only — it was never implemented; v1.5 supersedes it with the more general symmetry-block axis.**
 - **v1.3** — Unified interaction interface and direct-path wavefunctions. The canonical solver input is now an assembled `Interaction` block `(N_E, M, M)` built by `interaction_from_{block,array,funcs}`; raw `(N_c,N_c,N[,N])` arrays are no longer accepted by solvers. Added internal wavefunctions on the linear-solve path (`wavefunction_direct`). Reworked the block assembler to the **symmetric MeV form** (mass baked into the kinetic block, coupling potential left untouched), which fixes the multi-mass asymmetry and lifts the single-μ limitation: **per-channel and energy-dependent reduced mass** (`ChannelSpec.mass_factor` per channel, `mass_factor_grid` shape `(N_E, N_c)`) are now first-class on the direct path. Updated §8, §10.2, §11.2–11.3, §11.5, §15; added Phase 10 to the build order (former Phase 10 → 11).
 - **v1.2** — Final pre-implementation review. Fixed unit convention bug (`threshold / mass_factor` in `assemble_block_hamiltonian`); fixed `rmatrix_from_spectrum` and `greens_from_spectrum` to convert E from MeV to fm⁻²; replaced undefined `_project_open`/`_pad_back` with full implementation; rewrote `rmatrix_direct` to vmap over compile-time energies; fixed Example 16.7 (energy-dependent V) which was semantically incorrect; split `to_grid` into two explicit functions; added §15.4 unit convention table; added Appendix C (10 implementation sharp edges).
 - **v1.1** — Unified all continuum solvers around a single spectral decomposition kernel. R-matrix and Green's function are computed as spectral sums over the eigenpairs of the Bloch-augmented Hamiltonian. Introduced a mesh-independent `spectral` submodule. Added energy-dependent V(E) compile mode with Padé interpolation. Added method-dispatch (`eigh` / `eig` / `linear_solve`) to handle real, complex, and GPU constraints. Linear-solve R-matrix-direct path moved to its own `rmatrix_direct` namespace.
@@ -1383,9 +1384,34 @@ def _bind_solvers(spectrum_fn, mesh, channels, energies, boundary, mass_factor):
     return rmatrix, smatrix, phases, greens, eigh
 ```
 
+**`wavefunction_grid` (v1.6).** When `'wavefunction'` is requested with an energy grid, the
+solver additionally binds `wavefunction_grid(spectrum, channel_index=0)`: internal
+wavefunctions for **every** `(block, grid-energy)` pair against the compile-time-baked
+source stack (`Solver.wavefunction_sources`, Descouvemont eq. 27 — built from
+`mesh.basis_at_boundary` and the `H⁻` boundary cache, with **no** `is_open` masking;
+sub-threshold entries are defined but are not scattering wavefunctions).  One entry point
+serves both evaluation regimes, detected from the `Spectrum` rank
+(`spectrum_is_energy_batched`): a static-V spectrum runs the fused diagonalize-once einsum
+``ψ_e = U · diag(1/(ε_k − E_e/μ)) · (Uᵀ_metric · source_e)`` over all energies without
+materializing Green's matrices (§10.2), while an energy-batched spectrum vmaps the
+per-energy Green's contraction over the aligned `(spec_e, E_e, source_e, μ_e)` axes — the
+`smatrix_grid` pattern.  `channel_index=None` returns all incoming channels on an extra
+`N_c` axis.  **Regime rule:** the energy-batched path is selected by
+`V.energy_dependent or mass_factor_nonuniform` — a non-uniform μ(E) makes diagonalize-once
+invalid physics even for a static V (Appendix C.10).
+
 ### 11.3 The direct (linear-solve) path: `rmatrix_direct` and `wavefunction_direct`
 
 The direct path solves the Bloch–Schrödinger system per energy without an eigendecomposition. It is the GPU-/vmap-native route for complex V (where `eig` is a CPU callback) and the only path for non-local kernels that avoids forming a dense `M×M` eigenvector matrix. It consumes an `Interaction` (§15.1) and, as of v1.3, also produces internal wavefunctions.
+
+**`wavefunction_direct_grid` (v1.6).** Whenever the direct path is active the solver also
+binds `wavefunction_direct_grid(V, channel_index=0)`: one LU factorization per
+`(block, energy)` solved against every incoming-channel column of the baked source stack —
+the same shapes and closed-channel contract as the spectral `wavefunction_grid`.  It
+inherits the direct path's per-channel μ(E) support and, unlike the `eig` spectral path, is
+**fully differentiable** (Appendix C.11) — the route for gradient/UQ work with complex
+optical potentials.  Propagated multi-interval meshes are rejected
+(`NotImplementedError`): the boundary basis behind the source stack differs per interval.
 
 ```python
 # solvers/linear_solve.py
@@ -1772,6 +1798,46 @@ def make_integration(mesh):
 `operator`, recovering the Gauss-sum form ⟨ψ|V(r)|ψ⟩ ≈ Σ c_j² V(r_j).)
 
 For a wave function in a regularized basis, the orthonormality of the *Gauss approximation* [1, eq. 2.12] guarantees that $\langle\psi|\psi\rangle \approx \sum_j c_j^2$ to the same accuracy as the LMM itself, even when the regularized basis is not exactly orthonormal in the full $L^2$ sense [1, §2.7, eq. 2.69].
+
+### 13.4 Two-state bilinear matrix elements (v1.6)
+
+`integrate` is deliberately single-state and always-conjugating.  The batched two-state
+form lives in `transforms/bilinear.py` and is bound **unconditionally** on every solver
+(it depends only on compile-time shapes):
+
+```python
+solver.matrix_element(bra, ket, operator=None, *, conjugate)  # keyword-required
+#   conjugate=False :  braᵀ · O · ket     (the DWBA bilinear; matches the
+#                                          complex-symmetric U diag Uᵀ metric)
+#   conjugate=True  :  bra† · O · ket     (the Hermitian inner product)
+```
+
+Operator forms and the **scaling contract** (the silent-wrongness trap): ``None`` is the
+overlap; a ``(M,)`` array is a *local* operator as **unscaled** node values ``V(rᵢ)``
+(the coefficients absorb ``√(λᵢ a)``, so the element is the plain node sum); a ``(M, M)``
+array is a caller-**Gauss-scaled** kernel ``K̃ᵢⱼ = √(λᵢλⱼ)·a·K(rᵢ,rⱼ)``; an
+:class:`Interaction` is the recommended form — its assembled block already carries exactly
+this scaling for both local and non-local content, and its static flags drive the
+block/energy axis alignment (via `lift_block`).  `matrix_element` adds no factors of
+``a``, ``k``, or quadrature weights beyond what is inside the operator.
+
+Batching: `bra`/`ket` accept ``(M,)``, rank-2, or ``(N_b, N_E, M)`` in the canonical
+block × energy order.  Rank-2 follows a **deterministic mode-based rule** (never
+shape-sniffing): blocks mode → block-leading ``(N_b, M)``; channels mode → energy-leading
+``(N_E, M)``; mismatches raise naming the expected axis.  Internally states are lifted to
+``(N_b|1, N_E|1, M)`` and the three jitted einsum kernels
+(`'...m,...m->...'` / `'...m,...m,...m->...'` / `'...m,...mn,...n->...'`) broadcast; the
+output squeezes axes no input contributed (scalar for unbatched inputs).  A standalone
+`lax.transforms.matrix_element` does the pure broadcast einsum with no solver-aware
+interpretation or validation.
+
+> **v1.6 note on §13.1–13.2 batching.** The `grid=` projection kernels are trailing-axis
+> einsums (``'rn,...n->...r'`` and kin), so arbitrary leading batch axes (block, energy)
+> pass through in both compile modes.  In blocks mode `F_momentum` is
+> ``(N_b, N_c, M_k, N)`` and `fourier`/`double_fourier_transform` accept ``(N_b, N)`` /
+> ``(N_b, N, N)`` inputs, broadcasting unbatched ones across blocks; rank-2 inputs with
+> leading dimension ``N_b`` are **always** block-batched vectors (in the ``N_b == N``
+> corner a broadcast kernel must be written ``jnp.broadcast_to(K, (N_b, N, N))``).
 
 ---
 
@@ -2308,7 +2374,10 @@ array-parameterized per-block cores + `jax.vmap(block axis)` in
 block-dependent funcs term is a *sequence of N_b callables*). Constraints as shipped: the
 spectral path requires one uniform mass factor across all blocks (per-block/per-channel μ is
 a direct-path feature); `mass_factor_grid` is shared across blocks; `blocks=` excludes
-propagated meshes and `momenta` transforms.
+propagated meshes.  As of v1.6 the `momenta=`/`grid=` transforms are block-batched —
+`F_momentum` is `(N_b, N_c, M_k, N)` (deduped per unique ℓ across the whole block set),
+`fourier`/`double_fourier_transform` accept `(N_b, …)` inputs and broadcast unbatched ones,
+and the `grid=` projections pass arbitrary leading batch axes through (§13).
 
 ---
 
@@ -2616,6 +2685,37 @@ interaction = solver.interaction_from_funcs(
 For coupled `(J, π)` groups (`N_c > 1`), each inner list holds that block's channels (all
 blocks sharing the same `N_c`), and the outputs carry the same leading `(N_b,)` axis.
 
+### 16.10 Example 9: batched (p,n) DWBA transition elements (v1.6)
+
+The driving case for `wavefunction_grid` + `matrix_element`: distorted waves from two
+compiled solvers (proton entrance with Coulomb, neutron exit without), contracted with an
+isovector transition operator — **non-conjugated**, batched over every `(block, energy)`
+pair in one call:
+
+```python
+mesh = lax.MeshSpec("legendre", "x", n=40, scale=12.0)
+blocks = [[lax.ChannelSpec(l=ell, threshold=0.0, mass_factor=mf_p)] for ell in ells]
+proton = lax.compile(mesh=mesh, blocks=blocks, solvers=("spectrum", "wavefunction"),
+                     energies=E_p, z1z2=(1, Z), V_is_complex=True, method="eig")
+neutron = lax.compile(mesh=mesh, blocks=[[c._replace(mass_factor=mf_n)] for [c] in blocks],
+                      solvers=("spectrum", "wavefunction"),
+                      energies=E_p - Q_pn, V_is_complex=True, method="eig")
+
+chi_p = proton.wavefunction_grid(proton.spectrum(V_p))     # (N_b, N_E, M)
+chi_n = neutron.wavefunction_grid(neutron.spectrum(V_n))   # (N_b, N_E, M)
+U1 = proton.interaction_from_array(local=[(U1_stack, A)], block_dependent=True)
+
+k_p = proton.boundary.k[:, :, 0]                           # (N_b, N_E)
+k_n = neutron.boundary.k[:, :, 0]
+T_pn = proton.matrix_element(chi_p, chi_n, U1, conjugate=False) / (mesh.scale * k_p * k_n)
+#       (N_b, N_E) — the whole partial-wave × energy T-matrix in one bilinear call.
+```
+
+Both solvers must share the identical mesh (the Gauss scaling inside `U1.block` belongs to
+it) and index-aligned block sets and energy grids — invariants the caller owns.  For
+gradient/UQ work replace the `eig` spectral path with `method="linear_solve"` and
+`wavefunction_direct_grid(V)` (Appendix C.11).
+
 ---
 
 ## 17. JAX considerations
@@ -2637,7 +2737,7 @@ All numerical-data dataclasses (`Mesh`, `PropagationMatrices`, `OperatorMatrices
 | Method | Internally calls | Differentiable? | `vmap` over V? | GPU? |
 |---|---|---|---|---|
 | `eigh` | `jnp.linalg.eigh` | Yes (closed-form JVP) | Yes | Yes |
-| `eig`  | `jnp.linalg.eig` (via host callback) | Yes (custom JVP in JAX) | Awkward | No |
+| `eig`  | host `np.linalg.eig` via `jax.pure_callback` | **No** (the callback has no JVP/VJP rule — Appendix C.11) | Sequential | No |
 | `linear_solve` | `jnp.linalg.solve` per energy | Yes | Yes | Yes |
 
 The `eigh` derivative rule has a known degeneracy issue at eigenvalue crossings — gradients become large or ill-defined when two eigenvalues collide [see `jax.experimental.linalg.eigh` notes]. For potential-fitting workflows this is rarely problematic in practice (level crossings as a function of potential parameters are measure-zero), but it's worth documenting.
@@ -2654,7 +2754,7 @@ The `device` argument to `compile()` places all cached arrays on the requested d
 
 ### 17.5 Gradient support
 
-The hot path is `eigh` (default) or `solve` (R-matrix-direct path). Both have JAX-defined custom JVP/VJP rules and are fully differentiable. The only non-JAX components (mpmath, scipy.special) are confined to compile time, so they do not enter any backward pass.
+The hot path is `eigh` (default) or `solve` (R-matrix-direct path). Both have JAX-defined custom JVP/VJP rules and are fully differentiable. The compile-time non-JAX components (mpmath, scipy.special) never enter a backward pass.  The **`eig` path is the exception**: its spectra flow through a runtime host callback (`jax.pure_callback` → `np.linalg.eig`) with no JVP/VJP rule, so `jax.grad` through any `eig`-path spectrum raises — gradient/UQ pipelines with complex optical potentials use `method="linear_solve"` (+ `wavefunction_direct_grid`) or restrict to real-V `eigh` problems (Appendix C.11).
 
 For second derivatives, `jax.hessian(loss)` works through both `eigh` and `solve`. Be aware that the second derivative of `eigh` involves squared denominators in eigenvalue differences and can be numerically unstable near degeneracies.
 
@@ -2970,6 +3070,50 @@ jax.config.update("jax_enable_x64", True)
 ```
 
 If the user imports JAX before importing `lax`, the call may not take effect (JAX freezes the config on first array creation). The fix is to import `lax` first, or to put the config call at the top of the user's script before any `import jax.numpy as jnp` usage. Document this prominently in the README.
+
+### C.10 Non-uniform `mass_factor_grid` forces the energy-batched spectral regime (v1.6)
+
+With a non-uniform μ(E) the dimensionless Hamiltonian `H/μ(E)` itself changes with energy,
+so "diagonalize once, evaluate many energies" is invalid **physics**, not just missing
+plumbing: a static-regime evaluation would mix per-energy boundary values with a single-μ
+spectral denominator — silently wrong matching.  As shipped in v1.6: (1) the spectrum
+kernel assembles each per-energy Hamiltonian with its own μ_e (the energy-batched path
+takes a `(N_E,)` `mass_factor_grid`, validated per-channel-uniform for the spectral path);
+(2) `spectrum(V)` auto-routes to the energy-batched path when
+`V.energy_dependent or mass_factor_nonuniform` — never on `V.energy_dependent` alone;
+(3) the five static-regime observables (`rmatrix`, `smatrix`, `phases`, `greens`,
+`wavefunction`) are bound to pickle-safe **raising stubs** (`_NonuniformMassFactorStub`)
+that point at the `*_grid` observables and the direct path; `wavefunction_grid`
+additionally raises in its static branch if handed a foreign static spectrum.  Per-channel
+non-uniform grids remain a direct-path-only feature and are rejected at compile for the
+spectral path.
+
+### C.11 `method="eig"` spectra are not differentiable (v1.6)
+
+Complex-symmetric spectra are computed through `jax.pure_callback` → host
+`np.linalg.eig` (`solvers/spectrum.py::_eig_via_callback`).  The callback carries no
+JVP/VJP rule, so `jax.grad` through **any** `eig`-path spectrum raises ("Pure callbacks do
+not support JVP").  DWBA distorted waves from complex optical potentials are exactly the
+`eig` case: gradient/UQ pipelines must use `method="linear_solve"` +
+`wavefunction_direct_grid` (fully differentiable through `jnp.linalg.solve`) or restrict
+to real-V `eigh` problems.  A test asserts the raise so a future custom-JVP upgrade is
+noticed.
+
+### C.12 Cross-engine wavefunction normalization (v1.6)
+
+`wavefunction_grid` / `wavefunction_direct_grid` return the internal solution of
+``(H − E/μ)ψ = φ(a)·H⁻(a)`` — driven by the boundary **value** of the incoming wave.
+R-matrix engines that instead drive the internal solution with the matched exterior
+**derivative** ``u_ext'(a) = (i/2)(H⁻′ − S·H⁺′)`` differ per ``(l, j, channel)`` by exactly
+the scalar ``(i/2)(H⁻′ − S·H⁺′)/H⁻`` — the driven solution is linear in the driving
+coefficient — times ``k/√a`` per channel if their coefficients live in the dimensionless
+``s = k·r`` coordinate.  The cross-engine acceptance test (``tests/acceptance/``; fixture
+generated from an external reference engine on a ⁴⁸Ca(p,n) IAS case with classical
+kinematics, so ``ħ²k²/2μ = Ecm`` maps each channel onto lax exactly) pins this relation to
+machine precision: elastic S-matrices agree to ~8×10⁻¹³ with **zero** free parameters, and
+the DWBA T-matrix to rtol 10⁻⁸ after the closed-form conversion
+``T_ref = conv_p·conv_n·matrix_element(χp, χn, U₁)/a²``.  Convention conversions belong in
+the caller, never inside lax.
 ---
 
-*End of design document. Version 1.2, intended for offline reference during library development.*
+*End of design document. Version 1.6, intended for offline reference during library development.*

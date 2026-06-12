@@ -75,6 +75,7 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
         "fourier",
         "double_fourier_transform",
         "integrate",
+        "matrix_element",
     ):
         assert getattr(restored, name) is not None
 
@@ -190,6 +191,10 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
     assert np.allclose(
         np.asarray(restored.integrate(vector, diagonal_operator)),
         np.asarray(solver.integrate(vector, diagonal_operator)),
+    )
+    assert np.allclose(
+        np.asarray(restored.matrix_element(vector, vector, matrix, conjugate=False)),
+        np.asarray(solver.matrix_element(vector, vector, matrix, conjugate=False)),
     )
 
 
