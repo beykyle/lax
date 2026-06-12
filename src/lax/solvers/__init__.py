@@ -9,7 +9,6 @@ from lax.solvers.linear_solve import (
 )
 from lax.solvers.observables import (
     bind_grid_observables,
-    bind_interpolators,
     bind_observables,
 )
 from lax.solvers.spectrum import make_spectrum_kernel
@@ -17,7 +16,6 @@ from lax.solvers.spectrum import make_spectrum_kernel
 __all__ = [
     "assemble_block_hamiltonian",
     "bind_grid_observables",
-    "bind_interpolators",
     "bind_observables",
     "build_Q",
     "make_direct_wavefunction_kernel",

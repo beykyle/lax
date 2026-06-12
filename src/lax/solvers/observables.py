@@ -13,14 +13,12 @@ formula runs, and the block axis is squeezed off the result.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
 
 import jax
 import jax.numpy as jnp
 
-from lax.spectral.interpolation import pade_interpolate
 from lax.spectral.matching import open_channel_smatrix_from_R, phases_from_S
 from lax.spectral.observables import (
     greens_from_spectrum,
@@ -33,7 +31,6 @@ from lax.types import (
     ChannelSpec,
     EigenpairAccessor,
     GreenFunctionObservable,
-    InterpolatorBuilder,
     Mesh,
     RMatrixObservable,
     SpectrumGridObservable,
@@ -293,36 +290,6 @@ class _PhasesGridObservable:
         return result if self.block_mode else result[0]
 
 
-@dataclass(frozen=True)
-class _InterpolatorBuilder:
-    """Pickle-safe Padé interpolation builder bound to one energy grid.
-
-    For a blocks-compiled solver (``n_blocks`` set) the samples carry a leading
-    ``(N_b,)`` axis ahead of the energy axis; :func:`pade_interpolate` fits over
-    the *leading* axis, so the block axis is moved behind the energy axis before
-    delegating and the interpolant evaluates to ``(N_b, …)`` per query energy.
-    """
-
-    energies: jax.Array
-    n_blocks: int | None = None
-
-    def __call__(
-        self,
-        values: jax.Array,
-        order: tuple[int, int] | None = None,
-    ) -> Callable[[float | jax.Array], jax.Array]:
-        """Build a Padé interpolator over the compile-time energy grid."""
-
-        if self.n_blocks is None:
-            return pade_interpolate(values, self.energies, order=order)
-        if values.ndim < 2 or values.shape[0] != self.n_blocks:
-            raise ValueError(
-                f"Expected block-batched samples with shape ({self.n_blocks}, "
-                f"N_E, ...); got {values.shape}."
-            )
-        return pade_interpolate(jnp.moveaxis(values, 0, 1), self.energies, order=order)
-
-
 def bind_observables(
     mesh: Mesh,
     blocks: tuple[tuple[ChannelSpec, ...], ...],
@@ -465,23 +432,6 @@ def bind_grid_observables(
             block_mode=block_mode,
         )
     return rmatrix_grid, smatrix_grid, phases_grid
-
-
-def bind_interpolators(
-    energies: jax.Array,
-    n_blocks: int | None = None,
-) -> tuple[InterpolatorBuilder, InterpolatorBuilder, InterpolatorBuilder]:
-    """Bind Padé interpolation builders to one compile-time energy grid.
-
-    A single builder type serves the R-matrix, S-matrix, and phase-shift
-    interpolation paths; the three returned values are aliases kept for public API
-    clarity on the ``Solver`` bundle.  For a blocks-compiled solver
-    (``n_blocks`` set) the builder accepts ``(N_b, N_E, …)`` samples and fits
-    one interpolant per block.
-    """
-
-    builder = _InterpolatorBuilder(energies=energies, n_blocks=n_blocks)
-    return builder, builder, builder
 
 
 def _rmatrix(
@@ -859,6 +809,5 @@ def _match_one_energy(
 
 __all__ = [
     "bind_grid_observables",
-    "bind_interpolators",
     "bind_observables",
 ]

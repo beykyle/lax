@@ -445,32 +445,6 @@ class WavefunctionDirectObservable(Protocol):
         ...
 
 
-class InterpolatorBuilder(Protocol):
-    """Callable that builds a Padé interpolator over the compile-time grid."""
-
-    def __call__(
-        self,
-        values: jax.Array,
-        order: tuple[int, int] | None = None,
-    ) -> Callable[[EnergyLike], jax.Array]:
-        """Build a Padé interpolator over the solver's compile-time energy grid.
-
-        Parameters
-        ----------
-        values
-            Observable samples, shape ``(N_E, ...)``.
-        order
-            Padé numerator/denominator degrees ``(p, q)`` with ``p + q + 1 == N_E``.
-            Defaults to the diagonal approximant.
-
-        Returns
-        -------
-        Callable[[EnergyLike], jax.Array]
-            JIT-compiled interpolant; call it at any energy to evaluate.
-        """
-        ...
-
-
 class GridVectorTransform(Protocol):
     """Callable that projects mesh coefficients onto a fine radial grid."""
 
@@ -833,12 +807,6 @@ class Solver:
     rmatrix_direct
         ``(V) → R`` — per-energy linear-solve R-matrix on the compile-time grid.
 
-    **Padé interpolation builders** (present whenever ``energies`` was supplied):
-
-    interpolate_rmatrix, interpolate_smatrix, interpolate_phases
-        ``(samples, order=None) → callable`` — build a Padé interpolant over
-        the compile-time grid.
-
     **Transform helpers**:
 
     to_grid_vector
@@ -883,9 +851,6 @@ class Solver:
     interaction_from_funcs: Callable[..., Any] | None = None
     local_potential: Callable[..., Any] | None = None
     nonlocal_potential: Callable[..., Any] | None = None
-    interpolate_rmatrix: InterpolatorBuilder | None = None
-    interpolate_smatrix: InterpolatorBuilder | None = None
-    interpolate_phases: InterpolatorBuilder | None = None
     to_grid_vector: GridVectorTransform | None = None
     from_grid_vector: FromGridVectorTransform | None = None
     to_grid_matrix: GridMatrixTransform | None = None
@@ -960,7 +925,6 @@ __all__ = [
     "GridVectorTransform",
     "Integrator",
     "Interaction",
-    "InterpolatorBuilder",
     "Mesh",
     "MeshFamily",
     "MeshSpec",

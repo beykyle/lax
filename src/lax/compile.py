@@ -27,7 +27,6 @@ from lax.operators.interaction import (
 )
 from lax.solvers import (
     bind_grid_observables,
-    bind_interpolators,
     bind_observables,
     make_direct_wavefunction_kernel,
     make_phases_direct_observable,
@@ -56,7 +55,6 @@ from lax.types import (
     GridMatrixTransform,
     GridVectorTransform,
     Integrator,
-    InterpolatorBuilder,
     Mesh,
     MeshSpec,
     Method,
@@ -126,9 +124,6 @@ class _ObservableBundle:
     interaction_from_funcs: Callable[..., Any] | None
     local_potential: Callable[..., Any] | None
     nonlocal_potential: Callable[..., Any] | None
-    interpolate_rmatrix: InterpolatorBuilder | None
-    interpolate_smatrix: InterpolatorBuilder | None
-    interpolate_phases: InterpolatorBuilder | None
 
 
 def compile(
@@ -190,8 +185,7 @@ def compile(
         the compile-time energy grid.  Build the potential with
         ``energy_dependent=True`` — ``solver.spectrum`` dispatches the energy
         axis internally and returns a batched ``Spectrum`` — then use
-        ``solver.phases_grid(spectra)`` and the ``solver.interpolate_*``
-        builders for off-grid evaluation.
+        ``solver.phases_grid(spectra)`` for the aligned-grid observables.
     method
         Explicit solver method. When omitted, the method is chosen from
         ``V_is_complex`` and the active JAX backend.
@@ -679,19 +673,6 @@ def _bind_solver_observables(
             block_mode=block_mode,
         )
 
-    interpolate_rmatrix_fn: InterpolatorBuilder | None = None
-    interpolate_smatrix_fn: InterpolatorBuilder | None = None
-    interpolate_phases_fn: InterpolatorBuilder | None = None
-    if has_energy_grid:
-        (
-            interpolate_rmatrix_fn,
-            interpolate_smatrix_fn,
-            interpolate_phases_fn,
-        ) = bind_interpolators(
-            energies,
-            n_blocks=len(blocks) if block_mode else None,
-        )
-
     n_blocks = len(blocks) if block_mode else None
     interaction_from_block_fn = make_interaction_from_block(
         mesh, request.channels, energies, n_blocks=n_blocks
@@ -726,9 +707,6 @@ def _bind_solver_observables(
         interaction_from_funcs=interaction_from_funcs_fn,
         local_potential=local_potential_fn,
         nonlocal_potential=nonlocal_potential_fn,
-        interpolate_rmatrix=interpolate_rmatrix_fn,
-        interpolate_smatrix=interpolate_smatrix_fn,
-        interpolate_phases=interpolate_phases_fn,
     )
 
 
@@ -779,9 +757,6 @@ def _assemble_solver(
         interaction_from_funcs=observables.interaction_from_funcs,
         local_potential=observables.local_potential,
         nonlocal_potential=observables.nonlocal_potential,
-        interpolate_rmatrix=observables.interpolate_rmatrix,
-        interpolate_smatrix=observables.interpolate_smatrix,
-        interpolate_phases=observables.interpolate_phases,
         to_grid_vector=transforms.to_grid_vector,
         from_grid_vector=transforms.from_grid_vector,
         to_grid_matrix=transforms.to_grid_matrix,

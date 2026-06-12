@@ -4,7 +4,7 @@
 
 ## Revision history
 
-- **v1.5** — Generalized the (previously design-only) partial-wave axis into a **symmetry-block batch axis** (§15.5). Any set of *symmetry blocks* — `(J, π)` coupled-channel groups, individual partial waves, or any other independent solves that share a channel shape `N_c` — is declared through a new `compile(blocks=…)` argument, stacked on a leading `(N_b,)` axis, and `vmap`-ped at runtime. This is the energy-axis mechanism (§4.2) applied along a second batch axis; partial waves are the `N_c = 1` special case. The `Interaction` gains a static `block_dependent` flag parallel to `energy_dependent`, with block shapes `(N_b, M, M)` / `(N_b, N_E, M, M)`. **Status: implemented and shipped** — both the direct path (`rmatrix_direct`/`smatrix_direct`/`phases_direct`/`wavefunction_direct`) and the full spectral path (`spectrum`, `rmatrix`, `smatrix`, `phases`, `greens`, `wavefunction`, `eigh`, the `*_grid` observables) vmap over the block axis; the spectral path requires one uniform mass factor across all blocks, per-block μ remains a direct-path feature (see §15.5). This revision also reconciles the document with the shipped code: core types moved to `lax/types.py` and `BoundaryValues` to `lax/spectral/types.py` (`boundary/_types.py` deleted); the explicit `solver.local_potential` / `solver.nonlocal_potential` builders (no arity inference, no `solver.potential`); `interaction_from_funcs(nonlocal_=…)` (the keyword `nonlocal` is invalid Python); `smatrix_from_R`'s √k normalization (`R̃ = K R K⁻¹`, `K = diag(√k_c)`) and the extra `BoundaryValues.k` field; per-channel μ scaling in `wavefunction_direct`; single-channel coupling sugar for the list builders; `dtype`/`device` compile parameters; R-matrix propagation (`propagate.py`) promoted from a non-goal to a documented module; and several Appendix A formula fixes. A post-implementation review (2026-06-11) verified the batched paths against per-block compiled solvers and closed the remaining open items (single-channel coupling sugar for the list builders; `dtype`/`device` compile parameters — both now implemented and tested). The phased build order that guided the implementation (former §19) was retired at the v1.5 close-out, with every phase through 11 shipped; phase 12 (derivative-enhanced Padé interpolation) remains future work.
+- **v1.5** — Generalized the (previously design-only) partial-wave axis into a **symmetry-block batch axis** (§15.5). Any set of *symmetry blocks* — `(J, π)` coupled-channel groups, individual partial waves, or any other independent solves that share a channel shape `N_c` — is declared through a new `compile(blocks=…)` argument, stacked on a leading `(N_b,)` axis, and `vmap`-ped at runtime. This is the energy-axis mechanism (§4.2) applied along a second batch axis; partial waves are the `N_c = 1` special case. The `Interaction` gains a static `block_dependent` flag parallel to `energy_dependent`, with block shapes `(N_b, M, M)` / `(N_b, N_E, M, M)`. **Status: implemented and shipped** — both the direct path (`rmatrix_direct`/`smatrix_direct`/`phases_direct`/`wavefunction_direct`) and the full spectral path (`spectrum`, `rmatrix`, `smatrix`, `phases`, `greens`, `wavefunction`, `eigh`, the `*_grid` observables) vmap over the block axis; the spectral path requires one uniform mass factor across all blocks, per-block μ remains a direct-path feature (see §15.5). This revision also reconciles the document with the shipped code: core types moved to `lax/types.py` and `BoundaryValues` to `lax/spectral/types.py` (`boundary/_types.py` deleted); the explicit `solver.local_potential` / `solver.nonlocal_potential` builders (no arity inference, no `solver.potential`); `interaction_from_funcs(nonlocal_=…)` (the keyword `nonlocal` is invalid Python); `smatrix_from_R`'s √k normalization (`R̃ = K R K⁻¹`, `K = diag(√k_c)`) and the extra `BoundaryValues.k` field; per-channel μ scaling in `wavefunction_direct`; single-channel coupling sugar for the list builders; `dtype`/`device` compile parameters; R-matrix propagation (`propagate.py`) promoted from a non-goal to a documented module; and several Appendix A formula fixes. A post-implementation review (2026-06-11) verified the batched paths against per-block compiled solvers and closed the remaining open items (single-channel coupling sugar for the list builders; `dtype`/`device` compile parameters — both now implemented and tested). The phased build order that guided the implementation (former §19) was retired at the v1.5 close-out, with every phase through 11 shipped. The Padé interpolation utilities (`spectral.pade_interpolate` and the solver-bound `interpolate_*` builders, including the planned phase-12 derivative-enhanced variant) were subsequently **removed**: interpolation is observable-specific — global rational fits are defeated by the mod-π branch structure of phase shifts and by thresholds — so off-grid evaluation is left to the user (§12).
 - **v1.4** — Designed the **partial-wave (ℓ) batch axis** (§15.5, build-order Phase 11): a compile-time `partial_waves` set with baked per-wave centrifugal and boundary, a leading partial-wave axis on `Interaction` (parallel to `energy_dependent`), and partial-wave-vmapped direct observables. Distinct from the coupled-channel axis (independent solves, not coupling). Motivated by ℓ-dependent non-local kernels in the jitr refactor (jitr `DESIGN.md §4.7`). **This was a design only — it was never implemented; v1.5 supersedes it with the more general symmetry-block axis.**
 - **v1.3** — Unified interaction interface and direct-path wavefunctions. The canonical solver input is now an assembled `Interaction` block `(N_E, M, M)` built by `interaction_from_{block,array,funcs}`; raw `(N_c,N_c,N[,N])` arrays are no longer accepted by solvers. Added internal wavefunctions on the linear-solve path (`wavefunction_direct`). Reworked the block assembler to the **symmetric MeV form** (mass baked into the kinetic block, coupling potential left untouched), which fixes the multi-mass asymmetry and lifts the single-μ limitation: **per-channel and energy-dependent reduced mass** (`ChannelSpec.mass_factor` per channel, `mass_factor_grid` shape `(N_E, N_c)`) are now first-class on the direct path. Updated §8, §10.2, §11.2–11.3, §11.5, §15; added Phase 10 to the build order (former Phase 10 → 11).
 - **v1.2** — Final pre-implementation review. Fixed unit convention bug (`threshold / mass_factor` in `assemble_block_hamiltonian`); fixed `rmatrix_from_spectrum` and `greens_from_spectrum` to convert E from MeV to fm⁻²; replaced undefined `_project_open`/`_pad_back` with full implementation; rewrote `rmatrix_direct` to vmap over compile-time energies; fixed Example 16.7 (energy-dependent V) which was semantically incorrect; split `to_grid` into two explicit functions; added §15.4 unit convention table; added Appendix C (10 implementation sharp edges).
@@ -26,7 +26,7 @@
 9. [Boundary values: Coulomb, Hankel, and Whittaker functions](#9-boundary-values-coulomb-hankel-and-whittaker-functions)
 10. [The spectral submodule](#10-the-spectral-submodule)
 11. [Solvers and method dispatch](#11-solvers-and-method-dispatch)
-12. [Padé interpolation for energy-dependent potentials](#12-padé-interpolation-for-energy-dependent-potentials)
+12. [Off-grid energies: interpolation is out of scope](#12-off-grid-energies-interpolation-is-out-of-scope)
 13. [Transforms: grid, Fourier, integration](#13-transforms-grid-fourier-integration)
 14. [The `compile()` factory](#14-the-compile-factory)
 15. [Coupled-channel structure](#15-coupled-channel-structure)
@@ -171,9 +171,9 @@ $$G_{nm}(E) = \sum_k \frac{u_{kn} u_{km}}{\varepsilon_k - E} \tag{15}$$
 1. **Spectral kernel is the default runtime primitive.** `solver.spectrum(interaction)` returns a `Spectrum` object; all observables (R, S, G, phases, bound states, wavefunctions) are pure functions of that object plus (for matching-dependent quantities) precomputed boundary values.
 2. **Generality across mesh families.** Both Legendre and Laguerre families with their main regularizations supported via a single registry. Adding a new family or regularization requires writing one function.
 3. **Multiple solver modes from one mesh.** A single compiled solver bundle supports eigenvalue calculations, R-matrix calculations, S-matrix evaluation, scattering wavefunctions, and Green's-function evaluation.
-4. **Two energy modes.** Energy-independent V(E) (compile a spectrum-producing kernel; observables evaluable at any E for spectrum-derived quantities, at the compile-time grid for boundary-value-dependent quantities). Energy-dependent V(E) (user supplies V at each grid point; library produces observables at the grid and offers Padé interpolation between grid points).
+4. **Two energy modes.** Energy-independent V(E) (compile a spectrum-producing kernel; observables evaluable at any E for spectrum-derived quantities, at the compile-time grid for boundary-value-dependent quantities). Energy-dependent V(E) (user supplies V at each grid point; the library produces observables at the grid — off-grid interpolation is deliberately left to the user, §12).
 5. **Arbitrary user-supplied potentials.** Local $V(r)$ and non-local $W(r, r')$, real or complex, single or coupled channel.
-6. **Mesh-independent spectral submodule.** Spectral storage, sums, and interpolation live in `lax.spectral` and depend on nothing in the rest of the package.
+6. **Mesh-independent spectral submodule.** Spectral storage, sums, and matching live in `lax.spectral` and depend on nothing in the rest of the package.
 7. **Fine-grid / momentum-space / integration helpers.** Conversion of mesh vectors and matrices to finer radial grids or momentum space is precomputed matrix multiplication; integration is trivial in the Lagrange-mesh basis.
 8. **Full JAX integration.** Everything inside the runtime hot path is `jit`-, `vmap`-, and `grad`-compatible. Pytree registration explicit and minimal. No `equinox`/`flax` dependency.
 9. **Method dispatch for the complex / GPU case.** Real V uses `eigh` (GPU-ready). Complex V uses `eig` (CPU host callback) or the `linear_solve` R-matrix-direct path (GPU+vmap-ready; produces R/S/phases and internal wavefunctions, but no `Spectrum`/Green's function). Complex-symmetric Lanczos in JAX is a future enhancement.
@@ -243,7 +243,7 @@ The compile step:
 - `G = solver.greens(spectrum, E)`, `e, u = solver.eigh(spectrum)`.
 - `R = solver.rmatrix_direct(interaction)` — R-matrix-direct path; per-energy linear solve; no `Spectrum`. `smatrix_direct`/`phases_direct`/`wavefunction_direct` likewise.
 
-The `Interaction` carries an `energy_dependent` flag, so a single solve entry point covers both the energy-independent and energy-dependent cases; Padé interpolation utilities cover off-grid energies.
+The `Interaction` carries an `energy_dependent` flag, so a single solve entry point covers both the energy-independent and energy-dependent cases; off-grid energies are handled by recompiling on a new grid or by user-side interpolation of the sampled observables (§12).
 
 ### 4.2 The spectral form drives everything
 
@@ -356,9 +356,8 @@ lax/
 │   ├── __init__.py
 │   ├── types.py           # Spectrum AND BoundaryValues dataclasses (pytrees)
 │   ├── observables.py     # rmatrix_from_spectrum, greens_from_spectrum, ...
-│   ├── matching.py        # smatrix_from_R (√k normalization), open_channel_smatrix_from_R,
-│   │                      #   coupled_channel_parameters_from_S, phases_from_S
-│   └── interpolation.py   # pade_interpolate
+│   └── matching.py        # smatrix_from_R (√k normalization), open_channel_smatrix_from_R,
+│                          #   coupled_channel_parameters_from_S, phases_from_S
 │
 ├── solvers/
 │   ├── __init__.py
@@ -367,7 +366,7 @@ lax/
 │   │                      #   propagated direct solve)
 │   ├── assembly.py        # Block-Hamiltonian assembly from operators + V
 │   └── observables.py     # Bound observable objects + aligned-grid {rmatrix,smatrix,phases}_grid
-│                          #   and interpolate_* builders (in place of solvers/wavefunction.py)
+│                          #   (in place of solvers/wavefunction.py)
 │
 └── transforms/
     ├── __init__.py
@@ -571,10 +570,6 @@ class Solver:
     smatrix_direct:        Callable | None = None
     phases_direct:         Callable | None = None
     wavefunction_direct:   Callable | None = None   # C⁻¹ s on the direct path (§11.3)
-    # Padé interpolation builders (present whenever `energies` was supplied):
-    interpolate_rmatrix:   Callable | None = None
-    interpolate_smatrix:   Callable | None = None
-    interpolate_phases:    Callable | None = None
     # Transforms:
     to_grid_vector:    Callable | None = None
     to_grid_matrix:    Callable | None = None
@@ -1179,7 +1174,6 @@ from .matching import (
     coupled_channel_parameters_from_S,
     phases_from_S,
 )
-from .interpolation import pade_interpolate
 
 __all__ = [
     "Spectrum",
@@ -1191,7 +1185,6 @@ __all__ = [
     "open_channel_smatrix_from_R",
     "coupled_channel_parameters_from_S",
     "phases_from_S",
-    "pade_interpolate",
 ]
 ```
 
@@ -1568,106 +1561,34 @@ def build_Q(mesh, channels):
 
 ---
 
-## 12. Padé interpolation for energy-dependent potentials
+## 12. Off-grid energies: interpolation is out of scope
 
-For energy-dependent V(E), the user computes the spectrum at every grid energy and the library evaluates observables at the grid. To get observables at off-grid energies, the library provides Padé interpolation. Padé is the natural choice because observables inherit the rational structure of the R-matrix (poles at the eigenvalues, smooth modulation through the boundary values).
+> **Removed at the v1.5 close-out.** Earlier revisions shipped Padé interpolation
+> (`spectral.pade_interpolate` plus solver-bound `interpolate_{rmatrix,smatrix,phases}`
+> builders, v1.1–v1.5). The feature was removed deliberately rather than refined.
 
-### 12.1 Interface
+Boundary-value-dependent observables (S, phases) are produced on the compile-time energy
+grid (§3); for energy-dependent V(E) the aligned-grid helpers (§11) sample every
+observable at its own grid energy. Getting values *between* grid points is an
+interpolation problem, and the right interpolant depends on the observable:
 
-```python
-# spectral/interpolation.py
-from typing import Callable
-import jax
-import jax.numpy as jnp
+- **R-matrix** — meromorphic in E at fixed V (`R(E) = Σ_k γ_k²/(ε_k − E)`), so rational
+  (Padé-like) fits are principled. But on the spectrum path R is already **exact** at any
+  runtime energy from one `Spectrum`, so there is nothing to interpolate; and for
+  energy-dependent V the sampled `R(E_i; V(E_i))` is no longer rational in E.
+- **S-matrix** — smooth in |S| away from thresholds, but its energy dependence includes
+  Coulomb functions (not rational), and channel openings introduce branch points.
+- **Phase shifts** — defined only modulo π. Principal-branch samples acquire artificial
+  ±180° steps wherever the physical curve crosses the branch cut, and a global rational
+  approximant responds by parking a real pole at the step (a Froissart doublet) and
+  ringing across the whole interval.
 
-
-def pade_interpolate(
-    values: jnp.ndarray,            # (N_E, ...) sampled observable
-    knots: jnp.ndarray,             # (N_E,) energy grid
-    order: tuple[int, int] | None = None,
-) -> Callable[[jnp.ndarray], jnp.ndarray]:
-    """Return a JIT'd callable f(E_query) → interpolated values.
-    
-    For each leading-axis sample, fit a rational (p,q)-Padé approximant
-    in E about the grid center. Trailing axes are interpolated element-wise.
-    
-    Default order: (N_E//2 - 1, N_E//2), giving p + q + 1 = N_E.
-    """
-    n_e = len(knots)
-    if order is None:
-        order = (n_e // 2 - 1, n_e // 2)
-    p, q = order
-    assert p + q + 1 == n_e, (
-        f"order p+q+1 must equal N_E={n_e}, got {p}+{q}+1={p+q+1}"
-    )
-    
-    # Flatten trailing dims for vectorized fitting
-    trail_shape = values.shape[1:]
-    flat = values.reshape(n_e, -1)            # (N_E, K)
-    
-    # Center for numerical stability
-    E0 = jnp.mean(knots)
-    s = knots - E0
-    
-    # Build the Padé linear system per K-column
-    a_coeffs, b_coeffs = jax.vmap(_solve_pade_lsq, in_axes=(1, None, None, None))(
-        flat, s, p, q
-    )
-    # a_coeffs: (K, p+1), b_coeffs: (K, q+1) with b[0] = 1
-    
-    a_coeffs = a_coeffs.reshape(*trail_shape, p + 1)
-    b_coeffs = b_coeffs.reshape(*trail_shape, q + 1)
-    
-    @jax.jit
-    def evaluate(E):
-        """Evaluate at scalar or batched E."""
-        E_scalar = jnp.asarray(E)
-        ds = E_scalar - E0
-        num = sum(a_coeffs[..., k] * ds ** k for k in range(p + 1))
-        den = sum(b_coeffs[..., k] * ds ** k for k in range(q + 1))
-        return num / den
-    
-    return evaluate
-
-
-def _solve_pade_lsq(samples, s, p, q):
-    """Solve the Padé linear system for one sequence of samples.
-    
-    samples = a(s) / b(s) at s_k, with deg(a) = p, deg(b) = q, b_0 = 1.
-    
-    Standard linearization:
-        samples_k · b(s_k) - a(s_k) = 0
-        samples_k · (1 + b_1 s_k + ... + b_q s_k^q) - (a_0 + a_1 s_k + ... + a_p s_k^p) = 0
-    
-    Stack into an N_E × (p+q+1) linear system.
-    """
-    n_e = len(s)
-    A = jnp.zeros((n_e, p + q + 1))
-    # Columns 0..p: -s^k coefficient of a_k
-    for k in range(p + 1):
-        A = A.at[:, k].set(-(s ** k))
-    # Columns p+1..p+q: samples * s^k coefficient of b_k (k >= 1)
-    for k in range(1, q + 1):
-        A = A.at[:, p + k].set(samples * (s ** k))
-    rhs = -samples                                # = -samples · b_0 = -samples
-    coeffs = jnp.linalg.solve(A, rhs)
-    a_coeffs = coeffs[:p + 1]
-    b_coeffs = jnp.concatenate([jnp.array([1.0]), coeffs[p + 1:]])
-    return a_coeffs, b_coeffs
-```
-
-### 12.2 Notes
-
-- **Matrix observables.** The flattening handles any trailing shape, so `pade_interpolate(S_grid, energies_grid)` returns a function that maps E to `(N_c, N_c)` matrices.
-- **Complex values.** The Padé construction works element-wise; for complex `values` the coefficients are complex.
-- **Order auto-selection.** The default `(N_E//2 - 1, N_E//2)` gives a diagonal Padé (`p ≈ q`), which is typically well-conditioned. Users with prior knowledge of the analytic structure can pass an explicit `order`.
-- **Spurious poles.** Standard Padé construction can produce zeros of the denominator inside the interpolation interval (Froissart doublets). For resonance fitting where the pole structure is physically meaningful, downstream tools can analyze `b_coeffs` and warn or project. v1 does not enforce real poles automatically; future work could add an `enforce_real_poles=True` flag using Stoer-Bulirsch or barycentric variants.
-- **Differentiability.** The interpolator is differentiable in `values` (so you can fit potential parameters against finely-sampled experimental data while only paying for N_E spectra) and in `E` (so resonance positions can be tracked via `jax.grad(evaluate)(E_resonance)`).
-- **Compile-integrated scope.** The factory wiring is limited to **R-matrix-, S-matrix-, and phase-shift observables**. Green's functions and internal wavefunctions are excluded: for energy-independent problems they are already evaluable exactly from one `Spectrum` at arbitrary runtime energies, while for energy-dependent problems interpolating eigenpairs directly is ill-posed because ordering and phases can change across the grid.
-- **Energy-dependent API shape.** The `compile()` integration adds **aligned-grid** helpers rather than overloading the existing energy-independent methods (Phase 9, now implemented). For the spectral path these are `rmatrix_grid(spec_grid)`, `smatrix_grid(spec_grid)`, and `phases_grid(spec_grid)`, which evaluate `(spec_i, E_i, boundary_i)` pointwise along the compile-time grid; the direct path reaches the same samples through its grid-vmapped `*_direct` kernels. In both cases the interpolation builders `interpolate_rmatrix`, `interpolate_smatrix`, and `interpolate_phases` consume the aligned samples and return JIT-compiled Padé callables.
-- **Spectral vs direct capability.** The direct path may support the same value-only Padé interface for `R`, `S`, and phases, but only the spectral path admits cheap frozen-potential off-grid continuation near a knot: from `spec_i = spectrum(V(E_i))`, the user can evaluate `R(E; V(E_i))` and its energy derivatives in a neighborhood of `E_i` without additional linear solves. That structure is reserved for a derivative-enhanced interpolation scheme in a later phase.
-
----
+A single library-blessed interpolator therefore either silently misbehaves on the most
+commonly requested observables or grows per-observable special cases. The library instead
+guarantees cheap resampling: recompiling on a new energy grid costs milliseconds of
+`mpmath` boundary evaluation per (E, c) pair, and users who want true off-grid evaluation
+can interpolate the sampled arrays themselves with the appropriate tool (spline of |S|,
+unwrap-then-spline for δ, rational/K-matrix fits for resonance work).
 
 ## 13. Transforms: grid, Fourier, integration
 
@@ -1943,8 +1864,6 @@ def compile(
         (one V per compile-time energy point). The user is expected to
         call `jax.vmap(solver.spectrum)` over the energy axis themselves;
         `solver.smatrix` and friends consume the resulting batched Spectrum.
-        Padé interpolation across grid points is available via
-        `lax.spectral.pade_interpolate`.
     method : "eigh" | "eig" | "linear_solve" | None
         Linear-algebra backend. None invokes the default policy (see §11.4).
     V_is_complex : bool
@@ -2111,7 +2030,6 @@ def compile(
         smatrix_direct=smatrix_direct_fn,
         phases_direct=phases_direct_fn,
         wavefunction_direct=wf_direct_fn,
-        interpolate_rmatrix=interp_r, interpolate_smatrix=interp_s, interpolate_phases=interp_d,
         interaction_from_block=iface_block,
         interaction_from_array=iface_array,
         interaction_from_funcs=iface_funcs,
@@ -2154,7 +2072,7 @@ Four structural changes from the previous design:
 - It does not accept potentials. The solver is potential-agnostic.
 - It does not perform per-call setup. Everything not depending on `V` is done here, once.
 - It does not implicitly broadcast over potential parameters. The user uses `jax.vmap` over their parametric `V` builder.
-- It does not change the meaning of the existing energy-independent observable methods. `solver.smatrix(spec)` and `solver.phases(spec)` always evaluate one fixed `Spectrum` against the full compile-time boundary grid; they must not be repurposed for energy-dependent `V(E)`. The aligned-grid helpers `rmatrix_grid`/`smatrix_grid`/`phases_grid` and the `interpolate_*` builders cover the energy-dependent case separately (now implemented; §12) rather than overloading these methods.
+- It does not change the meaning of the existing energy-independent observable methods. `solver.smatrix(spec)` and `solver.phases(spec)` always evaluate one fixed `Spectrum` against the full compile-time boundary grid; they must not be repurposed for energy-dependent `V(E)`. The aligned-grid helpers `rmatrix_grid`/`smatrix_grid`/`phases_grid` cover the energy-dependent case separately rather than overloading these methods.
 
 ---
 
@@ -2422,7 +2340,7 @@ energies). The type is exported for annotations and for the raw-block escape hat
 no `assemble_local`/`assemble_nonlocal` exports (those primitives do not exist; the Gauss
 scaling is internal to `interaction_from_array`, §8).
 
-The `lax.spectral` submodule is exposed as a first-class peer because its functions (`rmatrix_from_spectrum`, `smatrix_from_R`, `pade_interpolate`, etc.) are useful standalone — for postprocessing, for stitching different solvers together, or for implementing custom observables.
+The `lax.spectral` submodule is exposed as a first-class peer because its functions (`rmatrix_from_spectrum`, `smatrix_from_R`, `coupled_channel_parameters_from_S`, etc.) are useful standalone — for postprocessing, for stitching different solvers together, or for implementing custom observables.
 
 ### 16.2 Example 1: Yamaguchi non-local potential
 
@@ -2573,7 +2491,7 @@ G_scan   = jax.vmap(lambda E: solver.greens(spec, E))(jnp.linspace(-2, 5, 200))
 # G_scan: (200, M, M) — one eigendecomposition, 200 resolvents
 ```
 
-### 16.7 Example 6: energy-dependent V(E) with Padé interpolation
+### 16.7 Example 6: energy-dependent V(E)
 
 For an energy-dependent potential the user builds an **energy-dependent `Interaction`** (`energy_dependent=True`; callables take a trailing `E`), whose block is `(N_E, M, M)`. `solver.spectrum(interaction)` then returns one `Spectrum` per energy. The S-matrix at each grid point must pair `spec_i` with *its own* energy `E_i` — using `solver.smatrix(spec_i)` would evaluate S at all N_E compile-time energies from a single spectrum, as if V were energy-independent, which is wrong.
 
@@ -2615,9 +2533,8 @@ def S_at_own_energy(spec_i, E_i, bdy_i):
 S_grid = jax.vmap(S_at_own_energy)(spec_grid, energies_grid, solver.boundary)
 # S_grid: (21, N_c, N_c) — S at each compile-time energy using V(E_i)
 
-# Padé-interpolate to any energy (S is smooth here):
-S_of_E = lax.spectral.pade_interpolate(S_grid, energies_grid)
-S_fine = jax.vmap(S_of_E)(jnp.linspace(0.1, 50.0, 2000))             # (2000, N_c, N_c)
+# Off-grid energies: recompile on a finer grid, or interpolate S_grid yourself
+# with an observable-appropriate scheme (§12).
 ```
 
 Key points:
@@ -2781,7 +2698,7 @@ Each row tests a different combination of (mesh family, regularization, solver k
 | α + ²⁰⁸Pb optical (complex, GPU) | Legendre $x$, $N=60$, $a=14$ | rmatrix_direct → smatrix | Desc. Appendix A | $10^{-4}$ |
 | Coulomb scattering, pure | Legendre $x$, $\eta \neq 0$ | spectrum → phases | pure Coulomb: $\delta = 0$ | $10^{-8}$ |
 | E1 strength function | Legendre $x$, $N=30$, $a=12$ | spectrum → greens | Baye Fig. 20 | qualitative |
-| Energy-dependent V(E) + Padé | Legendre $x$, $N=40$, sparse grid | spectrum_batch → smatrix → pade | round-trip with dense grid | $10^{-6}$ |
+| Energy-dependent V(E) aligned grid | Legendre $x$, $N=40$, sparse grid | spectrum_batch → smatrix_grid | matches per-energy recompiles | $10^{-10}$ |
 
 The Yamaguchi test is the keystone end-to-end test: it exercises non-local potential assembly, the spectrum kernel, the spectral R-matrix sum, the Coulomb boundary path, the S-matrix matching, and phase-shift extraction. It must pass before anything else is merged.
 
@@ -2800,7 +2717,6 @@ These run on every PR via `pytest` with `hypothesis` for fuzzed inputs:
 7. **vmap parity.** A Python `for` loop over 100 energies and `vmap(solver.rmatrix)(spec, energies)` produce identical outputs.
 8. **JIT cache stability.** Calling `solver.spectrum(interaction)` twice with different interaction blocks of the same shape does not recompile.
 9. **Autograd correctness.** `jax.test_util.check_grads(loss, ...)` passes for `loss(params) = ||S(params) - S_target||²` with finite-difference vs autograd agreement at 1e-5.
-10. **Padé round-trip.** Sampling a smooth observable on a dense grid, fitting on every-third-point, evaluating on the dense grid, and comparing against the original gives $<10^{-6}$ error for analytic functions.
 11. **Round-trip mesh ↔ grid.** $\sum_j c_j^2 \approx \int |\psi(r)|^2 dr$ on the fine grid (to LMM accuracy).
 
 ### 18.3 Regression tests
@@ -2844,9 +2760,6 @@ The Fortran R-matrix package whose architecture and Lagrange-Legendre formulas t
 [5] **M. Hesse, J. Roland, D. Baye**, *Solution of the Yamaguchi nonlocal problem on a Lagrange mesh*, **Nuclear Physics A 709**, 184–195 (2002). Original non-local potential application; reference values for the Yamaguchi benchmark.
 
 [6] **P. Descouvemont, D. Baye**, *The R-matrix theory*, **Reports on Progress in Physics 73**, 036301 (2010). General review of R-matrix theory in nuclear physics; discusses phenomenological R-matrix fitting in terms of poles and reduced widths, which are directly accessible from the `Spectrum` object.
-
-[7] **G. A. Baker Jr., P. Graves-Morris**, *Padé Approximants*, 2nd ed., Cambridge University Press (1996). Reference for the Padé interpolation construction used in `spectral.interpolation`.
-
 ---
 
 ## Appendix A: Mesh formula tables
@@ -2965,7 +2878,6 @@ For 3D harmonic-oscillator-like problems.
 | $\ell_c$ | Orbital angular momentum of channel $c$ |
 | $E_c$ | Threshold energy of channel $c$ |
 | $k_c$ | Wave number in channel $c$, $k_c^2 = (E - E_c)/(\hbar^2/2\mu_c)$ |
-| $(p, q)$ | Padé numerator/denominator orders |
 
 ---
 
@@ -3009,15 +2921,7 @@ def yamaguchi(r1, r2):
 returns values in **MeV** (the `* HBAR2_2MU` factor). Pass it as a non-local potential:
 `solver.nonlocal_potential(yamaguchi)` (single channel; or `interaction_from_funcs(nonlocal_=[yamaguchi])`). The builder Gauss-scales it to `block[i,j] += √(λ_i λ_j)·a·yamaguchi(r_i, r_j)` (MeV) and the assembler adds it to the block **untouched** (symmetric MeV form, §11.5) — there is no longer a per-channel division to reconcile, so the result matches the `test_yamaguchi.py` prototype directly. The channel's `mass_factor = HBAR2_2MU` enters only through the kinetic block and the boundary `k`. (A kernel pre-divided by ℏ²/2μ is no longer a meaningful special case, since V is not divided.)
 
-### C.5 Padé conditioning and the choice of `N_E`
-
-The default order `(N_E//2 - 1, N_E//2)` uses all available information but produces a Padé matrix whose condition number grows like `Vandermonde(s)^2`. For energy grids spanning more than a decade, Vandermonde matrices become severely ill-conditioned. Mitigations:
-
-- Use Chebyshev-spaced knots (`jnp.cos(jnp.linspace(0, π, N_E))` mapped to the energy range) rather than uniform spacing. This keeps the effective Lebesgue constant small.
-- For `N_E > 20` or wide ranges, prefer lower-order Padé `(p, q)` with `p + q + 1 < N_E` and least-squares fitting (`jnp.linalg.lstsq` instead of `solve`).
-- Always check that `abs(b_coeffs)` has no roots near the interpolation interval (Froissart doublets).
-
-### C.6 `eigh` derivative at near-degenerate eigenvalues
+### C.5 `eigh` derivative at near-degenerate eigenvalues
 
 The VJP of `jnp.linalg.eigh` involves terms of the form $1/(\varepsilon_i - \varepsilon_j)$. When two eigenvalues are nearly equal (which can happen for deep bound states in a large basis), the gradient spikes. For fitting workflows, regularize by:
 
@@ -3029,14 +2933,14 @@ eps_reg = 1e-6   # in fm⁻²
 
 Alternatively, use `jax.experimental.linalg.eigh_generalized` or add a small random perturbation to H before differentiation (breaks exact symmetry but stabilizes gradients).
 
-### C.7 Complex Coulomb and Sommerfeld parameter
+### C.6 Complex Coulomb and Sommerfeld parameter
 
 For charged particles with $\eta \neq 0$, `compute_boundary_values` calls `mpmath.coulombf(l, eta, rho)` and `mpmath.coulombg(l, eta, rho)`. With `dps=40` these are reliable for all $l$ and moderate $\eta$. Two known edge cases:
 
 - **Very large $\eta$ (heavy-ion Coulomb)**: `mpmath` may be slow (> 1 s per evaluation) for $\eta \gg 1$ at low energy. Increase `dps` or use a dedicated asymptotic expansion.
 - **Very small $\rho = ka$ (sub-barrier)**: When $ka \ll 1$ the Coulomb functions are dominated by the centrifugal barrier. `mpmath` handles this correctly but returns very large $G_L$ and very small $F_L$. The R-matrix then involves differences of large numbers; the `dps=40` setting provides sufficient guard digits.
 
-### C.8 The `is_open` mask and closed channels in v1
+### C.7 The `is_open` mask and closed channels in v1
 
 In v1, closed-channel rows/columns of the S-matrix are masked to zero in `_project_open` (not decoupled via the Whittaker boundary condition method of [2, eq. 9]). This is exact when the Bloch boundary parameter $B_c$ is set to eliminate the $L(B_c) u_{ext}$ term for closed channels. Until Phase 9 implements the Whittaker path:
 
@@ -3044,7 +2948,7 @@ In v1, closed-channel rows/columns of the S-matrix are masked to zero in `_proje
 - For energies where some channels are closed but far from threshold, the masking approximation is good.
 - For energies very close to a channel threshold, small systematic errors may appear (the eigenvectors of H are not aware of the closed-channel matching condition). Flag these energies by checking `solver.boundary.is_open`.
 
-### C.9 `Spectrum` pytree vmap behavior
+### C.8 `Spectrum` pytree vmap behavior
 
 When `jax.vmap(f)(batched_spectrum)` is called, JAX treats `Spectrum` as a pytree and maps over the leading axis of each array field:
 - `eigenvalues`: `(B, M)` → each call sees `(M,)`
@@ -3056,7 +2960,7 @@ This means `jax.vmap(solver.spectrum)(V_batch)` where `V_batch` has shape `(B, N
 
 `BoundaryValues` vmaps the same way: a `BoundaryValues` with `H_plus` of shape `(N_E, N_c)` when sliced under `jax.vmap` gives per-energy slices of shape `(N_c,)`.
 
-### C.10 `jax.config.update("jax_enable_x64", True)`
+### C.9 `jax.config.update("jax_enable_x64", True)`
 
 This must be called **before any JAX operation**. The library calls it at the top of `lax/__init__.py`:
 

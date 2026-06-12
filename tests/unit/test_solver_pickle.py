@@ -69,9 +69,6 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
         "phases_direct",
         "local_potential",
         "nonlocal_potential",
-        "interpolate_rmatrix",
-        "interpolate_smatrix",
-        "interpolate_phases",
         "to_grid_vector",
         "from_grid_vector",
         "to_grid_matrix",
@@ -93,9 +90,6 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
     assert solver.rmatrix_direct is not None
     assert solver.smatrix_direct is not None
     assert solver.phases_direct is not None
-    assert solver.interpolate_rmatrix is not None
-    assert solver.interpolate_smatrix is not None
-    assert solver.interpolate_phases is not None
     assert solver.to_grid_vector is not None
     assert solver.from_grid_vector is not None
     assert solver.to_grid_matrix is not None
@@ -168,18 +162,6 @@ def test_compiled_solver_round_trips_through_pickle() -> None:
     assert np.allclose(
         np.asarray(restored.phases_direct(interaction)),
         np.asarray(solver.phases_direct(interaction)),
-    )
-    restored_smatrix_grid = restored.smatrix_grid(restored_spectra_grid)
-    fresh_smatrix_grid = solver.smatrix_grid(fresh_spectra_grid)
-    restored_phase_grid = restored.phases_grid(restored_spectra_grid)
-    fresh_phase_grid = solver.phases_grid(fresh_spectra_grid)
-    assert np.allclose(
-        np.asarray(restored.interpolate_smatrix(restored_smatrix_grid)(0.4)),
-        np.asarray(solver.interpolate_smatrix(fresh_smatrix_grid)(0.4)),
-    )
-    assert np.allclose(
-        np.asarray(restored.interpolate_phases(restored_phase_grid)(0.4)),
-        np.asarray(solver.interpolate_phases(fresh_phase_grid)(0.4)),
     )
     assert np.allclose(
         np.asarray(restored.to_grid_vector(vector)),

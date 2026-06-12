@@ -52,8 +52,6 @@ Mesh-independent observables operating on a :class:`~lax.spectral.Spectrum`.
 
 .. autofunction:: lax.spectral.coupled_channel_parameters_from_S
 
-.. autofunction:: lax.spectral.pade_interpolate
-
 lax.models
 ----------
 

@@ -77,9 +77,6 @@ def test_compile_exposes_direct_rmatrix_kernel() -> None:
     assert solver.smatrix_direct is not None
     assert solver.phases_direct is not None
     assert solver.local_potential is not None
-    assert solver.interpolate_rmatrix is not None
-    assert solver.interpolate_smatrix is not None
-    assert solver.interpolate_phases is not None
     assert solver.spectrum is None
 
 
